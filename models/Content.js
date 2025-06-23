@@ -34,10 +34,30 @@ const ContentSchema = new mongoose.Schema({
     category: String,
 
     // AI processed content
-    summary: String,
-    highlights: [String],
-    keyPoints: [String],
-    relevantTopics: [String],
+    transcript: {
+        text: String,
+        segments: [{
+            start: Number, // seconds
+            end: Number,   // seconds
+            text: String,
+            topics: [String],
+            relevanceScore: Number
+        }]
+    },
+    analysis: {
+        mainTopics: [String],
+        summary: String,
+        highlights: [{
+            text: String,
+            timestamp: Number,
+            relevanceScore: Number,
+            matchedInterests: [String]
+        }],
+        keyPoints: [String],
+        sentiment: String,
+        complexity: Number, // 1-10
+        overallRelevanceScore: Number // 0-100
+    },
 
     // User engagement
     views: [{

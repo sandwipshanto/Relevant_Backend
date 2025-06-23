@@ -16,13 +16,14 @@ const UserSchema = new mongoose.Schema({
         type: String,
         trim: true,
     },
-    interests: [{
-        type: String,
-        trim: true,
-    }],
+    // Hierarchical interests structure
+    interests: {
+        type: mongoose.Schema.Types.Mixed,
+        default: {}
+    },
     youtubeSources: [{
         channelId: String,
-        channelName: String,
+        channelTitle: String, // Changed from channelName to channelTitle for consistency
         channelUrl: String,
         addedAt: {
             type: Date,
