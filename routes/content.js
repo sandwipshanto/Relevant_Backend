@@ -4,8 +4,225 @@ const Content = require('../models/Content');
 const UserContent = require('../models/UserContent');
 const User = require('../models/User');
 const auth = require('../middleware/auth');
+const YouTubeService = require('../services/YouTubeService');
+const AIAnalysisService = require('../services/AIAnalysisService');
+const JobQueue = require('../services/SimpleJobQueue');
 
 const router = express.Router();
+
+// Process a specific YouTube video
+router.post('/process-video', auth, [
+    body('videoId').notEmpty().withMessage('Video ID is required'),
+], async (req, res) => {
+    try {
+        const errors = validationResult(req);
+        if (!errors.isEmpty()) {
+            return res.status(400).json({
+                success: false,
+                msg: 'Validation errors',
+                errors: errors.array()
+            });
+        }
+
+        const { videoId } = req.body;
+
+        // Get video details
+        const videoData = await YouTubeService.getVideoDetails(videoId);
+        if (!videoData) {
+            return res.status(404).json({
+                success: false,
+                msg: 'Video not found'
+            });
+        }
+
+        // Queue the video for processing
+        const job = await JobQueue.queueVideoProcessing(videoId, videoData, [req.user.id]);
+
+        res.json({
+            success: true,
+            msg: 'Video queued for processing',
+            jobId: job.id,
+            videoTitle: videoData.title
+        });
+
+    } catch (error) {
+        console.error('Process video error:', error);
+        res.status(500).json({
+            success: false,
+            msg: 'Error processing video'
+        });
+    }
+});
+
+// Process user's YouTube subscriptions
+router.post('/process-subscriptions', auth, async (req, res) => {
+    try {
+        const user = await User.findById(req.user.id);
+        if (!user || !user.youtubeSources || user.youtubeSources.length === 0) {
+            return res.status(400).json({
+                success: false,
+                msg: 'No YouTube subscriptions found'
+            });
+        }
+
+        const job = await JobQueue.queueUserSubscriptionProcessing(req.user.id);
+
+        res.json({
+            success: true,
+            msg: 'Subscriptions queued for processing',
+            jobId: job.id,
+            subscriptionsCount: user.youtubeSources.length
+        });
+
+    } catch (error) {
+        console.error('Process subscriptions error:', error);
+        res.status(500).json({
+            success: false,
+            msg: 'Error processing subscriptions'
+        });
+    }
+});
+
+// Get video highlights and segments
+router.get('/:id/highlights', auth, async (req, res) => {
+    try {
+        const content = await Content.findById(req.params.id);
+        if (!content) {
+            return res.status(404).json({
+                success: false,
+                msg: 'Content not found'
+            });
+        }
+
+        // Get user's interests for personalized highlights
+        const user = await User.findById(req.user.id);
+        const userInterests = user?.interests || {};
+
+        // Get AI-generated highlights with user-specific relevance
+        let personalizedHighlights = content.highlights || [];
+
+        if (Object.keys(userInterests).length > 0 && content.transcriptSegments.length > 0) {
+            // Re-score segments based on user interests
+            const relevanceScores = await AIAnalysisService.scoreSegmentsForUser(
+                content.transcriptSegments,
+                userInterests
+            );
+
+            personalizedHighlights = content.transcriptSegments
+                .map((segment, index) => ({
+                    ...segment,
+                    userRelevanceScore: relevanceScores[index] || 0
+                }))
+                .filter(segment => segment.userRelevanceScore > 0.7)
+                .sort((a, b) => b.userRelevanceScore - a.userRelevanceScore)
+                .slice(0, 10); // Top 10 personalized highlights
+        }
+
+        res.json({
+            success: true,
+            content: {
+                id: content._id,
+                title: content.title,
+                videoId: content.videoId,
+                url: content.url,
+                duration: content.duration
+            },
+            highlights: personalizedHighlights,
+            segments: content.transcriptSegments || [],
+            topics: content.topics || [],
+            categories: content.categories || []
+        });
+
+    } catch (error) {
+        console.error('Get highlights error:', error);
+        res.status(500).json({
+            success: false,
+            msg: 'Error fetching highlights'
+        });
+    }
+});
+
+// Search content by topic or keyword
+router.get('/search/:query', auth, async (req, res) => {
+    try {
+        const { query } = req.params;
+        const { page = 1, limit = 10, minRelevance = 0.5 } = req.query;
+        const skip = (page - 1) * limit;
+
+        // Search in content titles, descriptions, topics, and transcript
+        const searchResults = await Content.find({
+            $or: [
+                { title: { $regex: query, $options: 'i' } },
+                { description: { $regex: query, $options: 'i' } },
+                { topics: { $regex: query, $options: 'i' } },
+                { categories: { $regex: query, $options: 'i' } },
+                { 'transcriptSegments.text': { $regex: query, $options: 'i' } }
+            ]
+        })
+            .sort({ createdAt: -1 })
+            .skip(skip)
+            .limit(parseInt(limit));
+
+        // Get user's personalized content entries
+        const contentIds = searchResults.map(c => c._id);
+        const userContent = await UserContent.find({
+            userId: req.user.id,
+            contentId: { $in: contentIds },
+            relevanceScore: { $gte: minRelevance }
+        });
+
+        // Merge content with user data
+        const results = searchResults.map(content => {
+            const userEntry = userContent.find(uc =>
+                uc.contentId.toString() === content._id.toString()
+            );
+
+            return {
+                ...content.toObject(),
+                userContent: userEntry || null
+            };
+        });
+
+        res.json({
+            success: true,
+            query,
+            results,
+            pagination: {
+                currentPage: parseInt(page),
+                totalItems: results.length,
+                hasMore: results.length === parseInt(limit)
+            }
+        });
+
+    } catch (error) {
+        console.error('Search content error:', error);
+        res.status(500).json({
+            success: false,
+            msg: 'Error searching content'
+        });
+    }
+});
+
+// Get processing status and queue information
+router.get('/processing/status', auth, async (req, res) => {
+    try {
+        const queueStats = await JobQueue.getQueueStats();
+        const activeJobs = await JobQueue.getActiveJobs();
+
+        res.json({
+            success: true,
+            queueStats,
+            activeJobs
+        });
+
+    } catch (error) {
+        console.error('Get processing status error:', error);
+        res.status(500).json({
+            success: false,
+            msg: 'Error fetching processing status'
+        });
+    }
+});
 
 // Get personalized content feed for user
 router.get('/feed', auth, async (req, res) => {
