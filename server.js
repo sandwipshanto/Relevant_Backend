@@ -76,6 +76,100 @@ app.post('/api/admin/trigger/channel-monitoring', async (req, res) => {
     }
 });
 
+// AI Analysis cost monitoring endpoint
+app.get('/api/admin/ai/stats', async (req, res) => {
+    try {
+        const AIAnalysisService = require('./services/AIAnalysisService');
+        const stats = AIAnalysisService.getAnalysisStats();
+
+        // Get cost data from recent content
+        const Content = require('./models/Content');
+        const recentContent = await Content.find({
+            'aiAnalysis.processingCost': { $exists: true },
+            processedAt: { $gte: new Date(Date.now() - 24 * 60 * 60 * 1000) } // Last 24 hours
+        }).limit(100);
+
+        const costAnalysis = recentContent.reduce((acc, content) => {
+            const cost = content.aiAnalysis.processingCost || 0;
+            const stage = content.aiAnalysis.processingStage || 'unknown';
+
+            acc.totalCost += cost;
+            acc.stageBreakdown[stage] = (acc.stageBreakdown[stage] || 0) + cost;
+            acc.contentProcessed++;
+
+            if (content.costEffectiveAnalysis) {
+                if (content.costEffectiveAnalysis.aiProcessed) {
+                    acc.fullyAnalyzed++;
+                } else if (content.costEffectiveAnalysis.filtered) {
+                    acc.filtered++;
+                } else {
+                    acc.keywordOnly++;
+                }
+            }
+
+            return acc;
+        }, {
+            totalCost: 0,
+            contentProcessed: 0,
+            fullyAnalyzed: 0,
+            keywordOnly: 0,
+            filtered: 0,
+            stageBreakdown: {}
+        });
+
+        res.json({
+            success: true,
+            aiStats: stats,
+            costAnalysis,
+            last24Hours: {
+                totalCost: costAnalysis.totalCost,
+                avgCostPerItem: costAnalysis.contentProcessed > 0 ?
+                    costAnalysis.totalCost / costAnalysis.contentProcessed : 0,
+                processingBreakdown: {
+                    fullyAnalyzed: costAnalysis.fullyAnalyzed,
+                    keywordOnly: costAnalysis.keywordOnly,
+                    filtered: costAnalysis.filtered
+                }
+            }
+        });
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            msg: 'Error fetching AI stats',
+            error: error.message
+        });
+    }
+});
+
+// AI Analysis configuration update endpoint
+app.put('/api/admin/ai/config', async (req, res) => {
+    try {
+        const AIAnalysisService = require('./services/AIAnalysisService');
+        const { config } = req.body;
+
+        if (!config) {
+            return res.status(400).json({
+                success: false,
+                msg: 'Configuration data required'
+            });
+        }
+
+        AIAnalysisService.updateConfig(config);
+
+        res.json({
+            success: true,
+            msg: 'AI analysis configuration updated',
+            newConfig: AIAnalysisService.getAnalysisStats().config
+        });
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            msg: 'Error updating AI config',
+            error: error.message
+        });
+    }
+});
+
 app.get('/', (req, res) => {
     res.json({
         message: 'Relevant - Your Personal Content Curator API is running!',
