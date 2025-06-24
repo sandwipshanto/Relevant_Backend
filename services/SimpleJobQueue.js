@@ -80,16 +80,93 @@ class SimpleJobQueue {
                         start: 0,
                         duration: 10
                     }];
-                }
-
-                // Analyze content with AI (with fallback)
+                }                // Perform cost-effective AI analysis
                 let analysis;
                 try {
-                    analysis = await AIAnalysisService.analyzeContent(
-                        videoData.title,
-                        videoData.description || '',
-                        transcript
+                    console.log(`Starting cost-effective AI analysis for video: ${videoId}`);
+
+                    // Prepare content for analysis
+                    const contentForAnalysis = [{
+                        id: videoId,
+                        title: videoData.title,
+                        description: videoData.description || '',
+                        duration: videoData.duration,
+                        viewCount: videoData.viewCount || 0,
+                        channelTitle: videoData.channelTitle,
+                        publishedAt: videoData.publishedAt
+                    }];
+
+                    // Get user interests for relevance analysis
+                    const users = await User.find({
+                        'youtubeSources.channelId': videoData.channelId
+                    });
+
+                    // Aggregate user interests for analysis
+                    const aggregatedInterests = this.aggregateUserInterests(users);
+
+                    // Run multi-stage AI analysis
+                    const analysisResult = await AIAnalysisService.analyzeContent(
+                        contentForAnalysis,
+                        aggregatedInterests
                     );
+
+                    console.log(`AI Analysis completed - Cost: $${analysisResult.cost.total.toFixed(4)}`);
+                    console.log(`Stages: Basic(${analysisResult.stages.basicFiltered}) -> Keyword(${analysisResult.stages.keywordFiltered}) -> Quick(${analysisResult.stages.quickScored}) -> Full(${analysisResult.stages.fullyAnalyzed})`);
+
+                    if (analysisResult.analyzedContent.length > 0) {
+                        const analyzedContent = analysisResult.analyzedContent[0];
+                        analysis = {
+                            segments: transcript.map(t => ({
+                                ...t,
+                                relevanceScore: analyzedContent.finalRelevanceScore || 0.5,
+                                topics: analyzedContent.categories || ['general']
+                            })),
+                            analysis: analyzedContent.fullAnalysis || {
+                                summary: `Keyword-based analysis of ${videoData.title}`,
+                                sentiment: 'neutral',
+                                keyPoints: ['Generated from keyword analysis'],
+                                relevanceScore: analyzedContent.finalRelevanceScore || 0.5,
+                                processingCost: analysisResult.cost.total,
+                                processingStage: analyzedContent.aiProcessed ? 'full_ai' : 'keyword_filtered'
+                            },
+                            highlights: analyzedContent.highlights || transcript.slice(0, 2).map(t => ({
+                                ...t,
+                                reason: 'Keyword relevance match',
+                                relevance: analyzedContent.finalRelevanceScore || 0.5
+                            })),
+                            topics: analyzedContent.categories || ['general'],
+                            categories: analyzedContent.categories || ['General'],
+                            costEffectiveAnalysis: {
+                                totalCost: analysisResult.cost.total,
+                                stagesCompleted: Object.keys(analysisResult.stages).length,
+                                aiProcessed: analyzedContent.aiProcessed || false,
+                                keywordRelevance: analyzedContent.keywordRelevance || 0
+                            }
+                        };
+                    } else {
+                        // Content filtered out as irrelevant
+                        console.log(`Content filtered out as irrelevant: ${videoId}`);
+                        analysis = {
+                            segments: [],
+                            analysis: {
+                                summary: 'Content filtered out due to low relevance',
+                                sentiment: 'neutral',
+                                keyPoints: ['Content did not pass relevance filters'],
+                                relevanceScore: 0,
+                                processingCost: analysisResult.cost.total,
+                                processingStage: 'filtered_out'
+                            },
+                            highlights: [],
+                            topics: [],
+                            categories: [],
+                            costEffectiveAnalysis: {
+                                totalCost: analysisResult.cost.total,
+                                stagesCompleted: Object.keys(analysisResult.stages).length,
+                                aiProcessed: false,
+                                filtered: true
+                            }
+                        };
+                    }
                 } catch (error) {
                     console.log(`AI analysis failed for video: ${videoId} - ${error.message}`);
                     // Create mock analysis for testing
@@ -396,8 +473,7 @@ class SimpleJobQueue {
 
         this.jobs.set(jobId, job);
         console.log(`Queued video processing job ${jobId} for video: ${videoId}`);
-
-        return { id: jobId };
+        return jobId;
     }
 
     async queueChannelMonitoring() {
@@ -411,8 +487,7 @@ class SimpleJobQueue {
 
         this.jobs.set(jobId, job);
         console.log(`Queued channel monitoring job ${jobId}`);
-
-        return { id: jobId };
+        return jobId;
     }
 
     async queueUserSubscriptionProcessing(userId) {
@@ -426,22 +501,20 @@ class SimpleJobQueue {
 
         this.jobs.set(jobId, job);
         console.log(`Queued user subscription processing job ${jobId} for user: ${userId}`);
-
-        return { id: jobId };
+        return jobId;
     }
 
-    // Queue status methods
     async getQueueStats() {
         return {
             contentProcessing: {
-                waiting: this.jobs.size,
-                active: this.activeJobs.size,
+                waiting: Array.from(this.jobs.values()).filter(j => j.type === 'process-video').length,
+                active: Array.from(this.activeJobs.values()).filter(j => j.type === 'process-video').length,
                 completed: 0,
                 failed: 0
             },
             channelMonitoring: {
-                waiting: 0,
-                active: 0,
+                waiting: Array.from(this.jobs.values()).filter(j => j.type === 'monitor-channels').length,
+                active: Array.from(this.activeJobs.values()).filter(j => j.type === 'monitor-channels').length,
                 completed: 0,
                 failed: 0
             }
@@ -449,26 +522,132 @@ class SimpleJobQueue {
     }
 
     async getActiveJobs() {
-        const activeJobsArray = Array.from(this.activeJobs.values());
-
-        return {
-            contentProcessing: activeJobsArray.length,
-            channelMonitoring: 0,
-            jobs: {
-                content: activeJobsArray.map(job => ({
-                    id: job.id,
-                    data: job.data,
-                    progress: 50 // Mock progress
-                })),
-                channel: []
-            }
-        };
+        return Array.from(this.activeJobs.values());
     }
 
     async cleanup() {
         this.jobs.clear();
         this.activeJobs.clear();
         console.log('SimpleJobQueue cleaned up');
+    }
+
+    // Helper method to aggregate user interests for AI analysis
+    aggregateUserInterests(users) {
+        const aggregated = {};
+
+        for (const user of users) {
+            if (!user.interests) continue;
+
+            // Handle both array (legacy) and object (hierarchical) formats
+            if (Array.isArray(user.interests)) {
+                // Legacy format - convert to simple object
+                for (const interest of user.interests) {
+                    if (!aggregated[interest]) {
+                        aggregated[interest] = {
+                            priority: 5,
+                            keywords: [],
+                            subcategories: {}
+                        };
+                    }
+                    aggregated[interest].priority = Math.max(aggregated[interest].priority, 5);
+                }
+            } else if (typeof user.interests === 'object') {
+                // Hierarchical format - merge interests
+                for (const [category, data] of Object.entries(user.interests)) {
+                    if (!aggregated[category]) {
+                        aggregated[category] = {
+                            priority: data.priority || 5,
+                            keywords: [...(data.keywords || [])],
+                            subcategories: { ...(data.subcategories || {}) }
+                        };
+                    } else {
+                        // Merge with existing
+                        aggregated[category].priority = Math.max(
+                            aggregated[category].priority,
+                            data.priority || 5
+                        );
+
+                        // Merge keywords
+                        const existingKeywords = new Set(aggregated[category].keywords);
+                        for (const keyword of data.keywords || []) {
+                            existingKeywords.add(keyword);
+                        }
+                        aggregated[category].keywords = Array.from(existingKeywords);
+                        // Merge subcategories
+                        aggregated[category].subcategories = {
+                            ...aggregated[category].subcategories,
+                            ...(data.subcategories || {})
+                        };
+                    }
+                }
+            }
+        }
+
+        return aggregated;
+    }
+
+    // Queue management methods
+    async queueVideoProcessing(videoId, videoData, userIds = []) {
+        const jobId = ++this.jobId;
+        const job = {
+            id: jobId,
+            type: 'process-video',
+            data: { videoId, videoData, userIds },
+            createdAt: new Date()
+        };
+
+        this.jobs.set(jobId, job);
+        console.log(`Queued video processing job ${jobId} for video: ${videoId}`);
+        return jobId;
+    }
+
+    async queueChannelMonitoring() {
+        const jobId = ++this.jobId;
+        const job = {
+            id: jobId,
+            type: 'monitor-channels',
+            data: {},
+            createdAt: new Date()
+        };
+
+        this.jobs.set(jobId, job);
+        console.log(`Queued channel monitoring job ${jobId}`);
+        return jobId;
+    }
+
+    async queueUserSubscriptionProcessing(userId) {
+        const jobId = ++this.jobId;
+        const job = {
+            id: jobId,
+            type: 'process-user-subscriptions',
+            data: { userId },
+            createdAt: new Date()
+        };
+
+        this.jobs.set(jobId, job);
+        console.log(`Queued user subscription processing job ${jobId} for user: ${userId}`);
+        return jobId;
+    }
+
+    async getQueueStats() {
+        return {
+            contentProcessing: {
+                waiting: Array.from(this.jobs.values()).filter(j => j.type === 'process-video').length,
+                active: Array.from(this.activeJobs.values()).filter(j => j.type === 'process-video').length,
+                completed: 0,
+                failed: 0
+            },
+            channelMonitoring: {
+                waiting: Array.from(this.jobs.values()).filter(j => j.type === 'monitor-channels').length,
+                active: Array.from(this.activeJobs.values()).filter(j => j.type === 'monitor-channels').length,
+                completed: 0,
+                failed: 0
+            }
+        };
+    }
+
+    async getActiveJobs() {
+        return Array.from(this.activeJobs.values());
     }
 }
 

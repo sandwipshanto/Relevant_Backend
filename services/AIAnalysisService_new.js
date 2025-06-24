@@ -15,13 +15,13 @@ class AIAnalysisService {
             maxFullAnalysis: 5,
             fullAnalysisThreshold: 0.8
         };
-        
+
         this.irrelevantKeywords = [
             'clickbait', 'drama', 'gossip', 'scandal', 'reaction',
             'unboxing', 'haul', 'vlog', 'daily life', 'random',
             'weird', 'crazy', 'insane', 'shocking', 'you won\'t believe'
         ];
-        
+
         this.qualityIndicators = [
             'tutorial', 'guide', 'explanation', 'analysis', 'research',
             'study', 'science', 'technology', 'learning', 'education',
@@ -31,11 +31,11 @@ class AIAnalysisService {
 
     async analyzeContent(contentBatch, userInterests) {
         console.log(`Starting cost-effective analysis for ${contentBatch.length} items`);
-        
+
         // Stage 1: Basic filtering (FREE)
         const basicFiltered = this.stage1_basicFilter(contentBatch);
         console.log(`Stage 1: ${basicFiltered.length}/${contentBatch.length} passed basic filter`);
-        
+
         if (basicFiltered.length === 0) {
             return { analyzedContent: [], cost: { total: 0 }, stage: 'basic_filter', stages: {} };
         }
@@ -43,7 +43,7 @@ class AIAnalysisService {
         // Stage 2: Keyword relevance matching (FREE)
         const keywordFiltered = this.stage2_keywordFilter(basicFiltered, userInterests);
         console.log(`Stage 2: ${keywordFiltered.length}/${basicFiltered.length} passed keyword filter`);
-        
+
         if (keywordFiltered.length === 0) {
             return { analyzedContent: [], cost: { total: 0 }, stage: 'keyword_filter', stages: {} };
         }
@@ -51,20 +51,20 @@ class AIAnalysisService {
         // Stage 3: Quick AI relevance scoring (LOW COST)
         const quickScored = await this.stage3_quickAIScoring(keywordFiltered, userInterests);
         console.log(`Stage 3: ${quickScored.filter(c => c.quickScore >= this.config.quickScoreThreshold).length}/${quickScored.length} passed quick AI scoring`);
-        
+
         // Stage 4: Full AI analysis for top candidates (HIGH COST - LIMITED)
         const topCandidates = quickScored
             .filter(content => content.quickScore >= this.config.fullAnalysisThreshold)
             .sort((a, b) => b.quickScore - a.quickScore)
             .slice(0, this.config.maxFullAnalysis);
-            
+
         const fullyAnalyzed = await this.stage4_fullAIAnalysis(topCandidates, userInterests);
         console.log(`Stage 4: ${fullyAnalyzed.length} items received full AI analysis`);
-        
+
         // Combine results with cost tracking
         const results = this.combineResults(quickScored, fullyAnalyzed);
         const totalCost = this.calculateCost(quickScored.length, fullyAnalyzed.length);
-        
+
         return {
             analyzedContent: results,
             cost: totalCost,
@@ -82,23 +82,23 @@ class AIAnalysisService {
             if (!content.title || content.title.length < 10) return false;
             if (!content.description || content.description.length < this.config.minDescriptionLength) return false;
             if (content.description.length > this.config.maxDescriptionLength) return false;
-            
+
             const text = (content.title + ' ' + content.description).toLowerCase();
-            const hasIrrelevantKeywords = this.irrelevantKeywords.some(keyword => 
+            const hasIrrelevantKeywords = this.irrelevantKeywords.some(keyword =>
                 text.includes(keyword.toLowerCase())
             );
-            
+
             if (hasIrrelevantKeywords) return false;
-            
+
             const hasQualityIndicators = this.qualityIndicators.some(indicator =>
                 text.includes(indicator.toLowerCase())
             );
-            
+
             if (content.duration) {
                 const duration = this.parseDuration(content.duration);
                 if (duration < 120 || duration > 7200) return false;
             }
-            
+
             return hasQualityIndicators || content.viewCount > 10000;
         });
     }
@@ -116,19 +116,19 @@ class AIAnalysisService {
 
     async stage3_quickAIScoring(contentBatch, userInterests) {
         const results = [];
-        
+
         for (let i = 0; i < contentBatch.length; i += this.config.batchSize) {
             const batch = contentBatch.slice(i, i + this.config.batchSize);
             const batchResults = await this.quickScoreBatch(batch, userInterests);
             results.push(...batchResults);
         }
-        
+
         return results;
     }
 
     async stage4_fullAIAnalysis(topCandidates, userInterests) {
         const results = [];
-        
+
         for (const content of topCandidates) {
             try {
                 const fullAnalysis = await this.performFullAnalysis(content, userInterests);
@@ -150,7 +150,7 @@ class AIAnalysisService {
                 });
             }
         }
-        
+
         return results;
     }
 
@@ -158,19 +158,19 @@ class AIAnalysisService {
         const text = (content.title + ' ' + content.description).toLowerCase();
         let totalScore = 0;
         let matchCount = 0;
-        
+
         const interests = Array.isArray(userInterests) ? userInterests : Object.keys(userInterests || {});
-        
+
         for (const interest of interests) {
-            const interestData = typeof userInterests === 'object' && !Array.isArray(userInterests) 
-                ? userInterests[interest] 
+            const interestData = typeof userInterests === 'object' && !Array.isArray(userInterests)
+                ? userInterests[interest]
                 : { priority: 5, keywords: [] };
-            
+
             if (text.includes(interest.toLowerCase())) {
                 totalScore += (interestData.priority || 5) * 0.1;
                 matchCount++;
             }
-            
+
             const keywords = interestData.keywords || [];
             for (const keyword of keywords) {
                 if (text.includes(keyword.toLowerCase())) {
@@ -178,14 +178,14 @@ class AIAnalysisService {
                     matchCount++;
                 }
             }
-            
+
             if (interestData.subcategories) {
                 for (const [subcat, subcatData] of Object.entries(interestData.subcategories)) {
                     if (text.includes(subcat.toLowerCase())) {
                         totalScore += (subcatData.priority || 5) * 0.08;
                         matchCount++;
                     }
-                    
+
                     for (const keyword of subcatData.keywords || []) {
                         if (text.includes(keyword.toLowerCase())) {
                             totalScore += (subcatData.priority || 5) * 0.03;
@@ -195,7 +195,7 @@ class AIAnalysisService {
                 }
             }
         }
-        
+
         return matchCount >= this.config.keywordMatchThreshold ? Math.min(totalScore, 1.0) : 0;
     }
 
@@ -228,7 +228,7 @@ class AIAnalysisService {
 
     combineResults(quickScored, fullyAnalyzed) {
         const fullyAnalyzedIds = new Set(fullyAnalyzed.map(c => c.id));
-        
+
         const combined = [
             ...fullyAnalyzed,
             ...quickScored
@@ -239,7 +239,7 @@ class AIAnalysisService {
                     aiProcessed: false
                 }))
         ];
-        
+
         return combined
             .sort((a, b) => b.finalRelevanceScore - a.finalRelevanceScore)
             .filter(c => c.finalRelevanceScore >= this.config.minTitleRelevance);
@@ -248,7 +248,7 @@ class AIAnalysisService {
     calculateCost(quickScoredCount, fullyAnalyzedCount) {
         const quickCostPerItem = 0.001;
         const fullCostPerItem = 0.05;
-        
+
         return {
             quickScoring: quickScoredCount * quickCostPerItem,
             fullAnalysis: fullyAnalyzedCount * fullCostPerItem,
@@ -259,11 +259,11 @@ class AIAnalysisService {
     parseDuration(duration) {
         const match = duration.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
         if (!match) return 0;
-        
+
         const hours = parseInt(match[1] || '0');
         const minutes = parseInt(match[2] || '0');
         const seconds = parseInt(match[3] || '0');
-        
+
         return hours * 3600 + minutes * 60 + seconds;
     }
 
