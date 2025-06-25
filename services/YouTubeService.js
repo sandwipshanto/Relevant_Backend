@@ -1,5 +1,5 @@
 const { google } = require('googleapis');
-const YoutubeTranscript = require('youtube-transcript');
+const { YoutubeTranscript } = require('youtube-transcript');
 
 class YouTubeService {
     constructor() {
@@ -128,7 +128,7 @@ class YouTubeService {
 
             if (!transcript || transcript.length === 0) {
                 console.log('No transcript available for this video');
-                return null;
+                return []; // Return empty array instead of null
             }
 
             // Process transcript into our format
@@ -140,16 +140,11 @@ class YouTubeService {
                 relevanceScore: 0
             }));
 
-            // Combine all text
-            const fullText = transcript.map(item => item.text).join(' ');
-
-            return {
-                text: fullText,
-                segments: segments
-            };
+            // Return segments array directly for consistency
+            return segments;
         } catch (error) {
             console.error('Error fetching transcript:', error.message);
-            return null;
+            return []; // Return empty array instead of null
         }
     }
 

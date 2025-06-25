@@ -61,6 +61,25 @@ class SimpleJobQueue {
         try {
             console.log(`Processing video: ${videoId}`);
 
+            // Validate input data
+            if (!videoData || !videoData.title) {
+                console.error(`Invalid video data for video: ${videoId}`);
+                return { success: false, error: 'Invalid video data' };
+            }
+
+            // Ensure required fields have default values
+            videoData = {
+                title: videoData.title || 'Unknown Title',
+                description: videoData.description || '',
+                channelId: videoData.channelId || '',
+                channelTitle: videoData.channelTitle || 'Unknown Channel',
+                duration: videoData.duration || 'PT0S',
+                publishedAt: videoData.publishedAt || new Date().toISOString(),
+                viewCount: videoData.viewCount || 0,
+                thumbnails: videoData.thumbnails || {},
+                ...videoData
+            };
+
             // Check if content already exists
             let content = await Content.findOne({ videoId });
 
@@ -69,8 +88,13 @@ class SimpleJobQueue {
                 let transcript = [];
                 try {
                     transcript = await YouTubeService.getVideoTranscript(videoId);
+                    // Ensure transcript is always an array
+                    if (!transcript || !Array.isArray(transcript)) {
+                        transcript = [];
+                    }
                 } catch (error) {
                     console.log(`No transcript available for video: ${videoId} - ${error.message}`);
+                    transcript = [];
                 }
 
                 if (transcript.length === 0) {
@@ -80,134 +104,179 @@ class SimpleJobQueue {
                         start: 0,
                         duration: 10
                     }];
-                }                // Perform cost-effective AI analysis
+                }                // Step 1: List and display video information
+                console.log(`\n=== VIDEO ANALYSIS START ===`);
+                console.log(`Title: ${videoData.title}`);
+                console.log(`Channel: ${videoData.channelTitle}`);
+                console.log(`Duration: ${videoData.duration}`);
+                console.log(`Published: ${videoData.publishedAt}`);
+                console.log(`Views: ${videoData.viewCount || 0}`);
+
+                // Step 2: Extract keywords from transcript (free method, very low token usage)
+                const extractedKeywords = this.extractKeywordsFromTranscript(transcript);
+                console.log(`Transcript processed: ${transcript.length} segments -> ${extractedKeywords.length} keywords`);
+                console.log(`Keywords: ${extractedKeywords.slice(0, 10).join(', ')}${extractedKeywords.length > 10 ? '...' : ''}`);
+
+                // Step 3: Get user interests for relevance analysis
+                const users = await User.find({
+                    'youtubeSources.channelId': videoData.channelId
+                });
+                const aggregatedInterests = this.aggregateUserInterests(users);
+
+                // Step 4: Use OpenAI to analyze video relevance with keywords only
                 let analysis;
                 try {
-                    console.log(`Starting cost-effective AI analysis for video: ${videoId}`);
+                    console.log(`Starting OpenAI relevance analysis for video: ${videoId}`);
 
-                    // Prepare content for analysis
-                    const contentForAnalysis = [{
+                    const relevanceAnalysis = await AIAnalysisService.analyzeVideoRelevance({
                         id: videoId,
                         title: videoData.title,
-                        description: videoData.description || '',
+                        keywords: extractedKeywords,
                         duration: videoData.duration,
                         viewCount: videoData.viewCount || 0,
                         channelTitle: videoData.channelTitle,
                         publishedAt: videoData.publishedAt
-                    }];
+                    }, aggregatedInterests);
 
-                    // Get user interests for relevance analysis
-                    const users = await User.find({
-                        'youtubeSources.channelId': videoData.channelId
-                    });
+                    console.log(`Relevance Analysis completed - Score: ${relevanceAnalysis.relevanceScore} - Cost: $${relevanceAnalysis.cost.toFixed(4)}`);
 
-                    // Aggregate user interests for analysis
-                    const aggregatedInterests = this.aggregateUserInterests(users);
+                    // Step 5: If relevant, perform detailed analysis
+                    if (relevanceAnalysis.isRelevant) {
+                        console.log(`Video is relevant, performing detailed analysis...`);
 
-                    // Run multi-stage AI analysis
-                    const analysisResult = await AIAnalysisService.analyzeContent(
-                        contentForAnalysis,
-                        aggregatedInterests
-                    );
+                        const detailedAnalysis = await AIAnalysisService.performDetailedAnalysis({
+                            id: videoId,
+                            title: videoData.title,
+                            keywords: extractedKeywords,
+                            channelTitle: videoData.channelTitle
+                        }, aggregatedInterests);
 
-                    console.log(`AI Analysis completed - Cost: $${analysisResult.cost.total.toFixed(4)}`);
-                    console.log(`Stages: Basic(${analysisResult.stages.basicFiltered}) -> Keyword(${analysisResult.stages.keywordFiltered}) -> Quick(${analysisResult.stages.quickScored}) -> Full(${analysisResult.stages.fullyAnalyzed})`);
-
-                    if (analysisResult.analyzedContent.length > 0) {
-                        const analyzedContent = analysisResult.analyzedContent[0];
                         analysis = {
                             segments: transcript.map(t => ({
                                 ...t,
-                                relevanceScore: analyzedContent.finalRelevanceScore || 0.5,
-                                topics: analyzedContent.categories || ['general']
+                                relevanceScore: relevanceAnalysis.relevanceScore,
+                                topics: detailedAnalysis.topics || ['general']
                             })),
-                            analysis: analyzedContent.fullAnalysis || {
-                                summary: `Keyword-based analysis of ${videoData.title}`,
-                                sentiment: 'neutral',
-                                keyPoints: ['Generated from keyword analysis'],
-                                relevanceScore: analyzedContent.finalRelevanceScore || 0.5,
-                                processingCost: analysisResult.cost.total,
-                                processingStage: analyzedContent.aiProcessed ? 'full_ai' : 'keyword_filtered'
+                            analysis: {
+                                summary: detailedAnalysis.summary || `Analysis of ${videoData.title}`,
+                                sentiment: detailedAnalysis.sentiment || 'neutral',
+                                keyPoints: detailedAnalysis.keyPoints || [],
+                                relevanceScore: relevanceAnalysis.relevanceScore,
+                                processingCost: relevanceAnalysis.cost + (detailedAnalysis.cost || 0),
+                                processingStage: 'detailed_analysis',
+                                extractedKeywords: extractedKeywords
                             },
-                            highlights: analyzedContent.highlights || transcript.slice(0, 2).map(t => ({
+                            highlights: detailedAnalysis.highlights || transcript.slice(0, 2).map(t => ({
                                 ...t,
-                                reason: 'Keyword relevance match',
-                                relevance: analyzedContent.finalRelevanceScore || 0.5
+                                reason: 'High relevance to user interests',
+                                relevance: relevanceAnalysis.relevanceScore
                             })),
-                            topics: analyzedContent.categories || ['general'],
-                            categories: analyzedContent.categories || ['General'],
+                            topics: detailedAnalysis.topics || ['general'],
+                            categories: detailedAnalysis.categories || ['General'],
                             costEffectiveAnalysis: {
-                                totalCost: analysisResult.cost.total,
-                                stagesCompleted: Object.keys(analysisResult.stages).length,
-                                aiProcessed: analyzedContent.aiProcessed || false,
-                                keywordRelevance: analyzedContent.keywordRelevance || 0
+                                totalCost: relevanceAnalysis.cost + (detailedAnalysis.cost || 0),
+                                stagesCompleted: 2,
+                                aiProcessed: true,
+                                relevanceScore: relevanceAnalysis.relevanceScore,
+                                isRelevant: true,
+                                keywordCount: extractedKeywords.length
                             }
                         };
                     } else {
-                        // Content filtered out as irrelevant
-                        console.log(`Content filtered out as irrelevant: ${videoId}`);
+                        // Content not relevant - skip detailed analysis
+                        console.log(`Video not relevant (score: ${relevanceAnalysis.relevanceScore}), skipping detailed analysis`);
                         analysis = {
                             segments: [],
                             analysis: {
-                                summary: 'Content filtered out due to low relevance',
+                                summary: 'Video filtered out due to low relevance',
                                 sentiment: 'neutral',
-                                keyPoints: ['Content did not pass relevance filters'],
-                                relevanceScore: 0,
-                                processingCost: analysisResult.cost.total,
-                                processingStage: 'filtered_out'
+                                keyPoints: ['Video did not meet relevance threshold'],
+                                relevanceScore: relevanceAnalysis.relevanceScore,
+                                processingCost: relevanceAnalysis.cost,
+                                processingStage: 'relevance_filtered',
+                                extractedKeywords: extractedKeywords
                             },
                             highlights: [],
                             topics: [],
                             categories: [],
                             costEffectiveAnalysis: {
-                                totalCost: analysisResult.cost.total,
-                                stagesCompleted: Object.keys(analysisResult.stages).length,
+                                totalCost: relevanceAnalysis.cost,
+                                stagesCompleted: 1,
                                 aiProcessed: false,
-                                filtered: true
+                                relevanceScore: relevanceAnalysis.relevanceScore,
+                                isRelevant: false,
+                                filtered: true,
+                                keywordCount: extractedKeywords.length
                             }
                         };
                     }
                 } catch (error) {
                     console.log(`AI analysis failed for video: ${videoId} - ${error.message}`);
-                    // Create mock analysis for testing
+                    // Create fallback analysis for testing
+                    const extractedKeywords = this.extractKeywordsFromTranscript(transcript);
                     analysis = {
                         segments: transcript.map(t => ({
                             ...t,
-                            relevanceScore: Math.random() * 0.5 + 0.5,
-                            topics: ['technology', 'education']
+                            relevanceScore: 0.5,
+                            topics: ['general']
                         })),
                         analysis: {
-                            summary: `Analysis of ${videoData.title}`,
-                            sentiment: 'positive',
-                            keyPoints: ['Point 1', 'Point 2']
+                            summary: `Fallback analysis of ${videoData.title}`,
+                            sentiment: 'neutral',
+                            keyPoints: ['Analysis failed, using fallback'],
+                            relevanceScore: 0.5,
+                            processingCost: 0,
+                            processingStage: 'fallback',
+                            extractedKeywords: extractedKeywords
                         },
-                        highlights: transcript.slice(0, 3).map(t => ({
+                        highlights: transcript.slice(0, 2).map(t => ({
                             ...t,
-                            reason: 'High relevance to user interests'
+                            reason: 'Fallback highlight'
                         })),
-                        topics: ['technology', 'education', 'tutorial'],
-                        categories: ['Educational', 'Technology']
+                        topics: ['general'],
+                        categories: ['General']
                     };
                 }
 
+                console.log(`=== VIDEO ANALYSIS COMPLETE ===\n`);
+
                 // Create content record
                 content = new Content({
-                    videoId,
                     title: videoData.title,
                     description: videoData.description || '',
-                    channelId: videoData.channelId,
-                    channelTitle: videoData.channelTitle,
-                    publishedAt: new Date(videoData.publishedAt),
-                    duration: videoData.duration,
-                    thumbnailUrl: videoData.thumbnails?.medium?.url || videoData.thumbnails?.default?.url,
                     url: `https://www.youtube.com/watch?v=${videoId}`,
-                    transcript,
-                    transcriptSegments: analysis.segments || [],
-                    aiAnalysis: analysis.analysis || {},
-                    highlights: analysis.highlights || [],
-                    topics: analysis.topics || [],
-                    categories: analysis.categories || [],
-                    processedAt: new Date()
+                    source: 'youtube', // Required field
+                    sourceId: videoId, // YouTube video ID
+                    sourceChannel: {
+                        id: videoData.channelId,
+                        name: videoData.channelTitle
+                    },
+                    thumbnail: videoData.thumbnails?.medium?.url || videoData.thumbnails?.default?.url,
+                    publishedAt: new Date(videoData.publishedAt),
+                    duration: this.parseDuration(videoData.duration), // Convert to seconds
+                    transcript: {
+                        text: transcript.map(t => t.text).join(' '), // Use full transcript for storage
+                        segments: transcript.map(t => ({
+                            start: t.start || 0,
+                            end: t.end || (t.start || 0) + (t.duration || 0),
+                            text: t.text,
+                            topics: t.topics || [],
+                            relevanceScore: t.relevanceScore || 0
+                        })),
+                        // Store extracted keywords for analysis
+                        extractedKeywords: this.extractKeywordsFromTranscript(transcript)
+                    },
+                    analysis: {
+                        mainTopics: analysis.topics || [],
+                        summary: analysis.analysis?.summary || '',
+                        highlights: analysis.highlights || [],
+                        keyPoints: analysis.analysis?.keyPoints || [],
+                        sentiment: analysis.analysis?.sentiment || 'neutral',
+                        complexity: analysis.analysis?.complexity || 5,
+                        overallRelevanceScore: (analysis.analysis?.relevanceScore || 0) * 100
+                    },
+                    processed: true,
+                    processingError: null
                 });
 
                 await content.save();
@@ -468,12 +537,14 @@ class SimpleJobQueue {
             id: jobId,
             type: 'process-video',
             data: { videoId, videoData, userIds },
-            createdAt: new Date()
+            createdAt: new Date(),
+            status: 'queued'
         };
 
         this.jobs.set(jobId, job);
-        console.log(`Queued video processing job ${jobId} for video: ${videoId}`);
-        return jobId;
+        console.log(`Queued video processing job ${jobId} for video ${videoId}`);
+
+        return job;
     }
 
     async queueChannelMonitoring() {
@@ -490,50 +561,101 @@ class SimpleJobQueue {
         return jobId;
     }
 
+    /**
+     * Queue user subscription processing
+     */
     async queueUserSubscriptionProcessing(userId) {
         const jobId = ++this.jobId;
         const job = {
             id: jobId,
             type: 'process-user-subscriptions',
             data: { userId },
-            createdAt: new Date()
+            createdAt: new Date(),
+            status: 'queued'
         };
 
         this.jobs.set(jobId, job);
-        console.log(`Queued user subscription processing job ${jobId} for user: ${userId}`);
-        return jobId;
+        console.log(`Queued user subscription processing job ${jobId} for user ${userId}`);
+
+        return job;
     }
 
+    /**
+     * Get queue statistics
+     */
     async getQueueStats() {
         return {
-            contentProcessing: {
-                waiting: Array.from(this.jobs.values()).filter(j => j.type === 'process-video').length,
-                active: Array.from(this.activeJobs.values()).filter(j => j.type === 'process-video').length,
-                completed: 0,
-                failed: 0
-            },
-            channelMonitoring: {
-                waiting: Array.from(this.jobs.values()).filter(j => j.type === 'monitor-channels').length,
-                active: Array.from(this.activeJobs.values()).filter(j => j.type === 'monitor-channels').length,
-                completed: 0,
-                failed: 0
-            }
+            queuedJobs: this.jobs.size,
+            activeJobs: this.activeJobs.size,
+            totalJobsProcessed: this.jobId - this.jobs.size - this.activeJobs.size,
+            isProcessing: this.isProcessing
         };
     }
 
+    /**
+     * Get active jobs
+     */
     async getActiveJobs() {
-        return Array.from(this.activeJobs.values());
+        const activeJobsArray = Array.from(this.activeJobs.values()).map(job => ({
+            id: job.id,
+            type: job.type,
+            status: 'processing',
+            createdAt: job.createdAt,
+            data: job.data
+        }));
+
+        return activeJobsArray;
     }
 
+    /**
+     * Add job to queue (generic method)
+     */
+    addJob(type, data) {
+        const jobId = ++this.jobId;
+        const job = {
+            id: jobId,
+            type,
+            data,
+            createdAt: new Date(),
+            status: 'queued'
+        };
+
+        this.jobs.set(jobId, job);
+        console.log(`Added job ${jobId} of type ${type} to queue`);
+
+        return job;
+    }
+
+    /**
+     * Cleanup method for graceful shutdown
+     */
     async cleanup() {
-        this.jobs.clear();
-        this.activeJobs.clear();
-        console.log('SimpleJobQueue cleaned up');
+        console.log('SimpleJobQueue: Performing cleanup...');
+        this.isProcessing = false;
+        // Clear any active intervals or resources if needed
+        console.log('SimpleJobQueue: Cleanup complete');
     }
 
     // Helper method to aggregate user interests for AI analysis
     aggregateUserInterests(users) {
         const aggregated = {};
+
+        // Handle null or empty users array
+        if (!users || !Array.isArray(users) || users.length === 0) {
+            console.log('No users found for interest aggregation, using default interests');
+            return {
+                'programming': {
+                    priority: 5,
+                    keywords: ['coding', 'development', 'software'],
+                    subcategories: {}
+                },
+                'technology': {
+                    priority: 5,
+                    keywords: ['tech', 'innovation'],
+                    subcategories: {}
+                }
+            };
+        }
 
         for (const user of users) {
             if (!user.interests) continue;
@@ -586,68 +708,187 @@ class SimpleJobQueue {
         return aggregated;
     }
 
-    // Queue management methods
-    async queueVideoProcessing(videoId, videoData, userIds = []) {
-        const jobId = ++this.jobId;
-        const job = {
-            id: jobId,
-            type: 'process-video',
-            data: { videoId, videoData, userIds },
-            createdAt: new Date()
-        };
+    // Utility method to parse YouTube duration format (PT30M15S) to seconds
+    parseDuration(duration) {
+        if (!duration || typeof duration !== 'string') {
+            return 0;
+        }
 
-        this.jobs.set(jobId, job);
-        console.log(`Queued video processing job ${jobId} for video: ${videoId}`);
-        return jobId;
+        const match = duration.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
+        if (!match) {
+            return 0;
+        }
+
+        const hours = parseInt(match[1] || '0');
+        const minutes = parseInt(match[2] || '0');
+        const seconds = parseInt(match[3] || '0');
+
+        return hours * 3600 + minutes * 60 + seconds;
     }
 
-    async queueChannelMonitoring() {
-        const jobId = ++this.jobId;
-        const job = {
-            id: jobId,
-            type: 'monitor-channels',
-            data: {},
-            createdAt: new Date()
-        };
+    /**
+     * Extract keywords from transcript using free methods (no LLM)
+     * This method uses natural language processing techniques to extract relevant keywords
+     */
+    extractKeywordsFromTranscript(transcript) {
+        if (!transcript || !Array.isArray(transcript) || transcript.length === 0) {
+            return [];
+        }
 
-        this.jobs.set(jobId, job);
-        console.log(`Queued channel monitoring job ${jobId}`);
-        return jobId;
+        // Combine all transcript text
+        const fullText = transcript.map(segment => segment.text).join(' ').toLowerCase();
+
+        // Step 1: Basic text cleaning
+        const cleanedText = this.cleanTextForKeywordExtraction(fullText);
+
+        // Step 2: Extract important words and phrases
+        const keywords = this.extractImportantKeywords(cleanedText);
+
+        // Step 3: Filter and rank keywords
+        const rankedKeywords = this.rankKeywordsByImportance(keywords);
+
+        // Step 4: Return top keywords (limit for cost efficiency)
+        const topKeywords = rankedKeywords.slice(0, 30); // Limit to 30 most important keywords
+
+        console.log(`Keyword extraction: ${transcript.length} segments -> ${topKeywords.length} keywords`);
+        return topKeywords;
     }
 
-    async queueUserSubscriptionProcessing(userId) {
-        const jobId = ++this.jobId;
-        const job = {
-            id: jobId,
-            type: 'process-user-subscriptions',
-            data: { userId },
-            createdAt: new Date()
-        };
-
-        this.jobs.set(jobId, job);
-        console.log(`Queued user subscription processing job ${jobId} for user: ${userId}`);
-        return jobId;
+    /**
+     * Clean text for keyword extraction
+     */
+    cleanTextForKeywordExtraction(text) {
+        return text
+            // Remove URLs, emails, and special characters
+            .replace(/https?:\/\/[^\s]+/g, '')
+            .replace(/\S+@\S+\.\S+/g, '')
+            .replace(/[^\w\s]/g, ' ')
+            // Normalize whitespace
+            .replace(/\s+/g, ' ')
+            .trim();
     }
 
-    async getQueueStats() {
-        return {
-            contentProcessing: {
-                waiting: Array.from(this.jobs.values()).filter(j => j.type === 'process-video').length,
-                active: Array.from(this.activeJobs.values()).filter(j => j.type === 'process-video').length,
-                completed: 0,
-                failed: 0
-            },
-            channelMonitoring: {
-                waiting: Array.from(this.jobs.values()).filter(j => j.type === 'monitor-channels').length,
-                active: Array.from(this.activeJobs.values()).filter(j => j.type === 'monitor-channels').length,
-                completed: 0,
-                failed: 0
+    /**
+     * Extract important keywords using NLP techniques
+     */
+    extractImportantKeywords(text) {
+        const words = text.split(/\s+/);
+        const keywords = new Set();
+
+        // Common stop words to ignore
+        const stopWords = new Set([
+            'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by',
+            'this', 'that', 'these', 'those', 'i', 'you', 'he', 'she', 'it', 'we', 'they',
+            'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did',
+            'will', 'would', 'could', 'should', 'may', 'might', 'can', 'must',
+            'what', 'where', 'when', 'why', 'how', 'who', 'which',
+            'up', 'down', 'out', 'off', 'over', 'under', 'again', 'further', 'then', 'once',
+            'here', 'there', 'when', 'where', 'why', 'how', 'all', 'any', 'both', 'each',
+            'few', 'more', 'most', 'other', 'some', 'such', 'no', 'nor', 'not', 'only',
+            'own', 'same', 'so', 'than', 'too', 'very', 'just', 'now'
+        ]);
+
+        // Extract single words (nouns, verbs, adjectives)
+        for (let i = 0; i < words.length; i++) {
+            const word = words[i];
+            if (word.length >= 3 && !stopWords.has(word) && isNaN(word)) {
+                // Prioritize technical and educational terms
+                if (this.isTechnicalOrEducationalTerm(word)) {
+                    keywords.add(word + '_priority'); // Mark as priority
+                }
+                keywords.add(word);
             }
-        };
+        }
+
+        // Extract 2-word phrases (bigrams)
+        for (let i = 0; i < words.length - 1; i++) {
+            const phrase = `${words[i]} ${words[i + 1]}`;
+            if (!stopWords.has(words[i]) && !stopWords.has(words[i + 1]) &&
+                phrase.length >= 6 && phrase.length <= 25) {
+                if (this.isTechnicalOrEducationalPhrase(phrase)) {
+                    keywords.add(phrase + '_priority');
+                }
+                keywords.add(phrase);
+            }
+        }
+
+        // Extract 3-word phrases (trigrams) for technical concepts
+        for (let i = 0; i < words.length - 2; i++) {
+            const phrase = `${words[i]} ${words[i + 1]} ${words[i + 2]}`;
+            if (this.isTechnicalOrEducationalPhrase(phrase) && phrase.length <= 30) {
+                keywords.add(phrase + '_priority');
+            }
+        }
+
+        return Array.from(keywords);
     }
 
-    async getActiveJobs() {
-        return Array.from(this.activeJobs.values());
+    /**
+     * Check if a word is technical or educational
+     */
+    isTechnicalOrEducationalTerm(word) {
+        const technicalTerms = [
+            'function', 'variable', 'array', 'object', 'class', 'method', 'property',
+            'algorithm', 'data', 'structure', 'database', 'server', 'client', 'api',
+            'programming', 'coding', 'development', 'software', 'application', 'system',
+            'framework', 'library', 'package', 'module', 'component', 'interface',
+            'protocol', 'security', 'authentication', 'authorization', 'encryption',
+            'performance', 'optimization', 'testing', 'debugging', 'deployment',
+            'architecture', 'design', 'pattern', 'principle', 'concept', 'theory',
+            'analysis', 'implementation', 'solution', 'problem', 'approach', 'strategy',
+            'tutorial', 'guide', 'example', 'demo', 'explanation', 'introduction',
+            'advanced', 'beginner', 'intermediate', 'professional', 'best', 'practice'
+        ];
+        return technicalTerms.some(term => word.includes(term) || term.includes(word));
+    }
+
+    /**
+     * Check if a phrase is technical or educational
+     */
+    isTechnicalOrEducationalPhrase(phrase) {
+        const technicalPhrases = [
+            'machine learning', 'artificial intelligence', 'data science', 'web development',
+            'software engineering', 'computer science', 'programming language', 'database design',
+            'user interface', 'user experience', 'responsive design', 'version control',
+            'test driven', 'object oriented', 'functional programming', 'data structure',
+            'best practice', 'code review', 'software architecture', 'design pattern',
+            'how to', 'tutorial', 'step by', 'getting started', 'deep dive', 'case study',
+            'real world', 'practical example', 'hands on', 'comprehensive guide'
+        ];
+        return technicalPhrases.some(techPhrase =>
+            phrase.includes(techPhrase) || techPhrase.includes(phrase)
+        );
+    }
+
+    /**
+     * Rank keywords by importance
+     */
+    rankKeywordsByImportance(keywords) {
+        return keywords
+            .map(keyword => {
+                let score = 1;
+                const cleanKeyword = keyword.replace('_priority', '');
+
+                // Priority keywords get higher score
+                if (keyword.includes('_priority')) {
+                    score += 3;
+                }
+
+                // Longer phrases often more specific and valuable
+                if (cleanKeyword.split(' ').length > 1) {
+                    score += 1;
+                }
+
+                // Technical terms get bonus
+                if (this.isTechnicalOrEducationalTerm(cleanKeyword) ||
+                    this.isTechnicalOrEducationalPhrase(cleanKeyword)) {
+                    score += 2;
+                }
+
+                return { keyword: cleanKeyword, score };
+            })
+            .sort((a, b) => b.score - a.score)
+            .map(item => item.keyword);
     }
 }
 
