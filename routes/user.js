@@ -1,5 +1,6 @@
 const express = require('express');
 const { body, validationResult } = require('express-validator');
+const axios = require('axios');
 const User = require('../models/User');
 const auth = require('../middleware/auth');
 
@@ -162,6 +163,122 @@ router.delete('/youtube-sources/:channelId', auth, async (req, res) => {
         res.status(500).json({
             success: false,
             msg: 'Error removing YouTube channel'
+        });
+    }
+});
+
+// Get all user's YouTube sources
+router.get('/youtube-sources', auth, async (req, res) => {
+    try {
+        const user = await User.findById(req.user.id).select('youtubeSources');
+
+        res.json({
+            success: true,
+            channels: user.youtubeSources || []
+        });
+    } catch (err) {
+        console.error('Error fetching YouTube sources:', err.message);
+        res.status(500).json({
+            success: false,
+            msg: 'Failed to fetch YouTube sources'
+        });
+    }
+});
+
+// Import YouTube subscriptions automatically
+router.post('/youtube-sources/import', [
+    body('accessToken').notEmpty().withMessage('YouTube access token is required'),
+], auth, async (req, res) => {
+    try {
+        const errors = validationResult(req);
+        if (!errors.isEmpty()) {
+            return res.status(400).json({
+                success: false,
+                errors: errors.array()
+            });
+        } const { accessToken } = req.body;
+
+        // Fetch user's subscriptions from YouTube API
+        let allSubscriptions = [];
+        let nextPageToken = null;
+
+        do {
+            const subscriptionsResponse = await axios.get(
+                'https://www.googleapis.com/youtube/v3/subscriptions',
+                {
+                    params: {
+                        part: 'snippet',
+                        mine: true,
+                        maxResults: 50, // YouTube API limit
+                        pageToken: nextPageToken,
+                        key: process.env.YOUTUBE_API_KEY
+                    },
+                    headers: {
+                        Authorization: `Bearer ${accessToken}`
+                    }
+                }
+            );
+
+            allSubscriptions = allSubscriptions.concat(subscriptionsResponse.data.items);
+            nextPageToken = subscriptionsResponse.data.nextPageToken;
+        } while (nextPageToken);
+
+        const user = await User.findById(req.user.id);
+        const addedChannels = [];
+        const skippedChannels = [];
+
+        // Add each subscription to user's sources
+        for (const subscription of allSubscriptions) {
+            const channelData = {
+                channelId: subscription.snippet.resourceId.channelId,
+                channelTitle: subscription.snippet.title,
+                channelUrl: `https://youtube.com/channel/${subscription.snippet.resourceId.channelId}`
+            };
+
+            // Check if channel already exists
+            const existingSource = user.youtubeSources.find(
+                source => source.channelId === channelData.channelId
+            );
+
+            if (!existingSource) {
+                user.youtubeSources.push(channelData);
+                addedChannels.push(channelData);
+            } else {
+                skippedChannels.push(channelData);
+            }
+        }
+
+        await user.save();
+
+        res.json({
+            success: true,
+            message: `Successfully imported ${addedChannels.length} channels`,
+            addedChannels,
+            skippedChannels,
+            totalFound: allSubscriptions.length,
+            totalAdded: addedChannels.length,
+            totalSkipped: skippedChannels.length
+        });
+
+    } catch (error) {
+        console.error('Error importing YouTube subscriptions:', error);
+
+        // Handle specific YouTube API errors
+        if (error.response?.status === 401) {
+            return res.status(401).json({
+                success: false,
+                msg: 'Invalid or expired YouTube access token'
+            });
+        } else if (error.response?.status === 403) {
+            return res.status(403).json({
+                success: false,
+                msg: 'YouTube API quota exceeded or access denied'
+            });
+        }
+
+        res.status(500).json({
+            success: false,
+            msg: 'Failed to import YouTube subscriptions'
         });
     }
 });
