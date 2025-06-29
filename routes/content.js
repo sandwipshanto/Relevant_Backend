@@ -244,13 +244,48 @@ router.get('/feed', auth, async (req, res) => {
         // Filter out null content (in case of deleted content)
         const validContent = userContent.filter(uc => uc.contentId);
 
+        // Transform the data to a frontend-friendly structure
+        const transformedContent = validContent.map(uc => ({
+            // Include content fields at the top level
+            id: uc.contentId._id,
+            title: uc.contentId.title,
+            description: uc.contentId.description,
+            url: uc.contentId.url,
+            source: uc.contentId.source,
+            sourceId: uc.contentId.sourceId,
+            sourceChannel: uc.contentId.sourceChannel,
+            thumbnail: uc.contentId.thumbnail,
+            publishedAt: uc.contentId.publishedAt,
+            duration: uc.contentId.duration,
+            tags: uc.contentId.tags,
+            category: uc.contentId.category,
+
+            // Include analysis data
+            analysis: uc.contentId.analysis,
+
+            // Include user-specific data
+            userContent: {
+                id: uc._id,
+                relevanceScore: uc.relevanceScore,
+                matchedInterests: uc.matchedInterests,
+                personalizedSummary: uc.personalizedSummary,
+                personalizedHighlights: uc.personalizedHighlights,
+                viewed: uc.viewed,
+                viewedAt: uc.viewedAt,
+                liked: uc.liked,
+                saved: uc.saved,
+                dismissed: uc.dismissed,
+                createdAt: uc.createdAt
+            }
+        }));
+
         res.json({
             success: true,
-            content: validContent,
+            content: transformedContent,
             pagination: {
                 currentPage: parseInt(page),
-                totalItems: validContent.length,
-                hasMore: validContent.length === parseInt(limit)
+                totalItems: transformedContent.length,
+                hasMore: transformedContent.length === parseInt(limit)
             }
         });
     } catch (err) {
@@ -443,13 +478,49 @@ router.get('/saved/list', auth, async (req, res) => {
             .skip(skip)
             .limit(parseInt(limit));
 
+        // Filter out null content and transform to frontend-friendly structure
+        const validContent = savedContent.filter(uc => uc.contentId);
+        const transformedContent = validContent.map(uc => ({
+            // Include content fields at the top level
+            id: uc.contentId._id,
+            title: uc.contentId.title,
+            description: uc.contentId.description,
+            url: uc.contentId.url,
+            source: uc.contentId.source,
+            sourceId: uc.contentId.sourceId,
+            sourceChannel: uc.contentId.sourceChannel,
+            thumbnail: uc.contentId.thumbnail,
+            publishedAt: uc.contentId.publishedAt,
+            duration: uc.contentId.duration,
+            tags: uc.contentId.tags,
+            category: uc.contentId.category,
+
+            // Include analysis data
+            analysis: uc.contentId.analysis,
+
+            // Include user-specific data
+            userContent: {
+                id: uc._id,
+                relevanceScore: uc.relevanceScore,
+                matchedInterests: uc.matchedInterests,
+                personalizedSummary: uc.personalizedSummary,
+                personalizedHighlights: uc.personalizedHighlights,
+                viewed: uc.viewed,
+                viewedAt: uc.viewedAt,
+                liked: uc.liked,
+                saved: uc.saved,
+                dismissed: uc.dismissed,
+                createdAt: uc.createdAt
+            }
+        }));
+
         res.json({
             success: true,
-            content: savedContent,
+            content: transformedContent,
             pagination: {
                 currentPage: parseInt(page),
-                totalItems: savedContent.length,
-                hasMore: savedContent.length === parseInt(limit)
+                totalItems: transformedContent.length,
+                hasMore: transformedContent.length === parseInt(limit)
             }
         });
     } catch (err) {
