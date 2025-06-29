@@ -315,16 +315,24 @@ class SimpleJobQueue {
 
                 // Use relevance score from content analysis (already calculated in batch)
                 // If this video reached processVideo, it means it passed relevance filtering
-                const relevanceScore = content.analysis?.overallRelevanceScore 
+                const relevanceScore = content.analysis?.overallRelevanceScore
                     ? content.analysis.overallRelevanceScore / 100  // Convert back to 0-1 scale
                     : 0.8; // Default high score for videos that passed batch filtering
 
                 const threshold = parseFloat(process.env.RELEVANCE_THRESHOLD) || 0.6;
                 if (relevanceScore >= threshold) {
+                    // Calculate matched interests between user and content
+                    const matchedInterests = this.calculateMatchedInterests(user.interests, content);
+
+                    // Generate personalized highlights based on user interests
+                    const personalizedHighlights = this.generatePersonalizedHighlights(content, user.interests);
+
                     const userContent = new UserContent({
                         userId,
                         contentId: content._id,
                         relevanceScore,
+                        matchedInterests,
+                        personalizedHighlights,
                         createdAt: new Date()
                     });
                     await userContent.save();
@@ -442,7 +450,7 @@ class SimpleJobQueue {
             // Step 5: Process videos based on relevance results
             console.log('\n=== PROCESSING RELEVANT VIDEOS ===');
             let processedCount = 0;
-            
+
             for (const result of relevanceResults) {
                 if (result.isRelevant) {
                     console.log(`✅ Processing relevant video: ${result.video.title}`);
@@ -940,9 +948,9 @@ class SimpleJobQueue {
      */
     async extractKeywordsFromAllVideos(videos) {
         console.log(`Extracting keywords from ${videos.length} videos...`);
-        
+
         const videosWithKeywords = [];
-        
+
         for (const video of videos) {
             // Get transcript for each video
             let transcript = [];
@@ -967,7 +975,7 @@ class SimpleJobQueue {
 
             // Extract keywords
             const keywords = this.extractKeywordsFromTranscript(transcript);
-            
+
             videosWithKeywords.push({
                 ...video,
                 keywords,
@@ -988,7 +996,7 @@ class SimpleJobQueue {
      */
     async batchAnalyzeRelevance(videosWithKeywords, userInterests) {
         const interestsText = this.formatUserInterests(userInterests);
-        
+
         // Prepare batch data for OpenAI
         const videoSummaries = videosWithKeywords.map((video, index) => {
             return `${index + 1}. Title: "${video.title}"
@@ -1023,7 +1031,7 @@ Respond with JSON only - an array of objects:
 
         try {
             console.log(`Sending batch analysis request for ${videosWithKeywords.length} videos...`);
-            
+
             const response = await AIAnalysisService.getOpenAIClient().chat.completions.create({
                 model: 'gpt-3.5-turbo',
                 messages: [{ role: 'user', content: prompt }],
@@ -1033,7 +1041,7 @@ Respond with JSON only - an array of objects:
 
             const batchResults = JSON.parse(response.choices[0].message.content);
             const cost = this.calculateTokenCost(response.usage.total_tokens, 'gpt-3.5-turbo');
-            
+
             console.log(`✅ Batch analysis complete - Cost: $${cost.toFixed(4)}`);
             console.log(`📊 Analyzed ${batchResults.length} videos in single API call`);
 
@@ -1058,7 +1066,7 @@ Respond with JSON only - an array of objects:
 
         } catch (error) {
             console.error('Batch relevance analysis failed:', error);
-            
+
             // Fallback to individual analysis or conservative scoring
             return videosWithKeywords.map(video => ({
                 video,
@@ -1080,8 +1088,8 @@ Respond with JSON only - an array of objects:
         }
 
         const formatted = Object.entries(interests).map(([category, data]) => {
-            const keywords = data.keywords && data.keywords.length > 0 
-                ? ` (${data.keywords.slice(0, 5).join(', ')})` 
+            const keywords = data.keywords && data.keywords.length > 0
+                ? ` (${data.keywords.slice(0, 5).join(', ')})`
                 : '';
             return `${category}${keywords}`;
         }).join(', ');
@@ -1097,8 +1105,133 @@ Respond with JSON only - an array of objects:
             'gpt-3.5-turbo': 0.002 / 1000, // $0.002 per 1k tokens
             'gpt-4': 0.03 / 1000 // $0.03 per 1k tokens
         };
-        
+
         return tokens * (costs[model] || costs['gpt-3.5-turbo']);
+    }
+
+    /**
+     * Calculate matched interests between user and content
+     */
+    calculateMatchedInterests(userInterests, content) {
+        if (!userInterests || !content) return [];
+
+        const matchedInterests = [];
+        const contentKeywords = content.transcript?.extractedKeywords || [];
+        const contentTopics = content.analysis?.mainTopics || [];
+        const contentText = (content.title + ' ' + (content.description || '')).toLowerCase();
+
+        // Handle both array (legacy) and object (hierarchical) user interests formats
+        if (Array.isArray(userInterests)) {
+            // Legacy format - simple array of interests
+            for (const interest of userInterests) {
+                const interestLower = interest.toLowerCase();
+
+                // Check if interest matches content
+                if (contentText.includes(interestLower) ||
+                    contentKeywords.some(keyword => keyword.toLowerCase().includes(interestLower)) ||
+                    contentTopics.some(topic => topic.toLowerCase().includes(interestLower))) {
+                    matchedInterests.push(interest);
+                }
+            }
+        } else if (typeof userInterests === 'object') {
+            // Hierarchical format - object with categories
+            for (const [category, data] of Object.entries(userInterests)) {
+                const categoryLower = category.toLowerCase();
+                let categoryMatched = false;
+
+                // Check category name match
+                if (contentText.includes(categoryLower) ||
+                    contentKeywords.some(keyword => keyword.toLowerCase().includes(categoryLower)) ||
+                    contentTopics.some(topic => topic.toLowerCase().includes(categoryLower))) {
+                    categoryMatched = true;
+                }
+
+                // Check keywords within the category
+                if (data.keywords && Array.isArray(data.keywords)) {
+                    for (const keyword of data.keywords) {
+                        const keywordLower = keyword.toLowerCase();
+                        if (contentText.includes(keywordLower) ||
+                            contentKeywords.some(ck => ck.toLowerCase().includes(keywordLower)) ||
+                            contentTopics.some(topic => topic.toLowerCase().includes(keywordLower))) {
+                            categoryMatched = true;
+                            break;
+                        }
+                    }
+                }
+
+                if (categoryMatched) {
+                    matchedInterests.push(category);
+                }
+            }
+        }
+
+        return [...new Set(matchedInterests)]; // Remove duplicates
+    }
+
+    /**
+     * Generate personalized highlights based on user interests
+     */
+    generatePersonalizedHighlights(content, userInterests) {
+        if (!content.transcript?.segments || !userInterests) return [];
+
+        const personalizedHighlights = [];
+        const segments = content.transcript.segments || [];
+        const matchedInterests = this.calculateMatchedInterests(userInterests, content);
+
+        // If no matched interests, return general highlights
+        if (matchedInterests.length === 0) {
+            return segments.slice(0, 2).map(segment =>
+                `${segment.text?.substring(0, 100)}...`
+            ).filter(h => h.length > 10);
+        }
+
+        // Find segments that relate to user interests
+        for (const segment of segments.slice(0, 10)) { // Limit search to first 10 segments
+            if (!segment.text) continue;
+
+            const segmentTextLower = segment.text.toLowerCase();
+            let isRelevant = false;
+
+            // Check if segment mentions user interests
+            for (const interest of matchedInterests) {
+                const interestLower = interest.toLowerCase();
+                if (segmentTextLower.includes(interestLower)) {
+                    isRelevant = true;
+                    break;
+                }
+            }
+
+            // Also check for technical keywords if user has programming/tech interests
+            if (!isRelevant && matchedInterests.some(i =>
+                i.toLowerCase().includes('programming') ||
+                i.toLowerCase().includes('technology') ||
+                i.toLowerCase().includes('development')
+            )) {
+                const techKeywords = ['function', 'algorithm', 'code', 'programming', 'development', 'software', 'api', 'database'];
+                if (techKeywords.some(keyword => segmentTextLower.includes(keyword))) {
+                    isRelevant = true;
+                }
+            }
+
+            if (isRelevant) {
+                const highlight = segment.text.length > 150
+                    ? segment.text.substring(0, 150) + '...'
+                    : segment.text;
+                personalizedHighlights.push(highlight);
+            }
+
+            // Limit to 3 highlights
+            if (personalizedHighlights.length >= 3) break;
+        }
+
+        // If no specific highlights found, use general highlights
+        if (personalizedHighlights.length === 0) {
+            return segments.slice(0, 2).map(segment =>
+                segment.text?.substring(0, 100) + '...'
+            ).filter(h => h && h.length > 10);
+        }
+
+        return personalizedHighlights;
     }
 }
 
