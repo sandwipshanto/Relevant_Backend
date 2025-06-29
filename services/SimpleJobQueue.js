@@ -284,6 +284,8 @@ class SimpleJobQueue {
             }
 
             // Create personalized content for specified users
+            // NOTE: At this point, relevance has already been calculated in batch processing
+            // Only videos that passed the relevance filter should reach this point
             let targetUsers = userIds;
             if (!targetUsers || targetUsers.length === 0) {
                 const users = await User.find({
@@ -311,18 +313,11 @@ class SimpleJobQueue {
                 const user = await User.findById(userId);
                 if (!user) return null;
 
-                // Calculate relevance score (with fallback)
-                let relevanceScore;
-                try {
-                    relevanceScore = await AIAnalysisService.calculateRelevanceScore(
-                        content,
-                        user.interests
-                    );
-                } catch (error) {
-                    console.log(`Relevance calculation failed, using mock score: ${error.message}`);
-                    // Generate mock relevance based on user interests
-                    relevanceScore = Math.random() * 0.4 + 0.6; // 0.6-1.0 range
-                }
+                // Use relevance score from content analysis (already calculated in batch)
+                // If this video reached processVideo, it means it passed relevance filtering
+                const relevanceScore = content.analysis?.overallRelevanceScore 
+                    ? content.analysis.overallRelevanceScore / 100  // Convert back to 0-1 scale
+                    : 0.8; // Default high score for videos that passed batch filtering
 
                 const threshold = parseFloat(process.env.RELEVANCE_THRESHOLD) || 0.6;
                 if (relevanceScore >= threshold) {
@@ -365,18 +360,18 @@ class SimpleJobQueue {
                 return { success: false, reason: 'No YouTube sources found' };
             }
 
-            let totalProcessed = 0;
+            // Step 1: Collect all videos from all channels first
+            console.log('\n=== BATCH VIDEO COLLECTION ===');
+            const allVideos = [];
             const channelResults = [];
 
             for (const source of user.youtubeSources) {
                 try {
-                    // Get recent videos from channel (with fallback)
                     let videos = [];
                     try {
                         videos = await YouTubeService.getChannelVideos(source.channelId, 5);
                     } catch (error) {
                         console.log(`Failed to get videos from ${source.channelId}, creating mock data`);
-                        // Create mock video data for testing
                         videos = [{
                             id: `mock_${Date.now()}_${Math.random()}`,
                             title: `Mock Video from ${source.channelTitle}`,
@@ -391,7 +386,8 @@ class SimpleJobQueue {
                         }];
                     }
 
-                    let channelProcessed = 0;
+                    // Filter out videos that already exist
+                    const newVideos = [];
                     for (const video of videos) {
                         const existingContent = await Content.findOne({
                             videoId: video.id,
@@ -399,21 +395,19 @@ class SimpleJobQueue {
                         });
 
                         if (!existingContent) {
-                            await this.queueVideoProcessing(video.id, video, [userId]);
-                            channelProcessed++;
+                            newVideos.push(video);
                         }
                     }
 
+                    allVideos.push(...newVideos);
                     channelResults.push({
                         channelId: source.channelId,
                         channelTitle: source.channelTitle,
-                        videosQueued: channelProcessed
+                        videosFound: newVideos.length
                     });
 
-                    totalProcessed += channelProcessed;
-
                 } catch (error) {
-                    console.error(`Error processing channel ${source.channelId}:`, error);
+                    console.error(`Error collecting videos from channel ${source.channelId}:`, error);
                     channelResults.push({
                         channelId: source.channelId,
                         channelTitle: source.channelTitle,
@@ -422,10 +416,60 @@ class SimpleJobQueue {
                 }
             }
 
+            if (allVideos.length === 0) {
+                console.log('No new videos found to process');
+                return {
+                    success: true,
+                    userId,
+                    totalVideosQueued: 0,
+                    channelResults
+                };
+            }
+
+            console.log(`Found ${allVideos.length} new videos across ${user.youtubeSources.length} channels`);
+
+            // Step 2: Extract keywords from all videos
+            console.log('\n=== BATCH KEYWORD EXTRACTION ===');
+            const videosWithKeywords = await this.extractKeywordsFromAllVideos(allVideos);
+
+            // Step 3: Get user interests for batch analysis
+            const aggregatedInterests = this.aggregateUserInterests([user]);
+
+            // Step 4: Batch relevance analysis
+            console.log('\n=== BATCH RELEVANCE ANALYSIS ===');
+            const relevanceResults = await this.batchAnalyzeRelevance(videosWithKeywords, aggregatedInterests);
+
+            // Step 5: Process videos based on relevance results
+            console.log('\n=== PROCESSING RELEVANT VIDEOS ===');
+            let processedCount = 0;
+            
+            for (const result of relevanceResults) {
+                if (result.isRelevant) {
+                    console.log(`✅ Processing relevant video: ${result.video.title}`);
+                    await this.queueVideoProcessing(result.video.id, result.video, [userId]);
+                    processedCount++;
+                } else {
+                    console.log(`❌ Skipping irrelevant video: ${result.video.title} (score: ${result.relevanceScore})`);
+                }
+            }
+
+            console.log(`\n=== BATCH PROCESSING COMPLETE ===`);
+            console.log(`Total videos analyzed: ${allVideos.length}`);
+            console.log(`Relevant videos queued: ${processedCount}`);
+            console.log(`Videos filtered out: ${allVideos.length - processedCount}`);
+
             return {
                 success: true,
                 userId,
-                totalVideosQueued: totalProcessed,
+                totalVideosAnalyzed: allVideos.length,
+                totalVideosQueued: processedCount,
+                relevanceResults: relevanceResults.map(r => ({
+                    videoId: r.video.id,
+                    title: r.video.title,
+                    relevanceScore: r.relevanceScore,
+                    isRelevant: r.isRelevant,
+                    reasoning: r.reasoning
+                })),
                 channelResults
             };
 
@@ -889,6 +933,172 @@ class SimpleJobQueue {
             })
             .sort((a, b) => b.score - a.score)
             .map(item => item.keyword);
+    }
+
+    /**
+     * Extract keywords from all videos in batch
+     */
+    async extractKeywordsFromAllVideos(videos) {
+        console.log(`Extracting keywords from ${videos.length} videos...`);
+        
+        const videosWithKeywords = [];
+        
+        for (const video of videos) {
+            // Get transcript for each video
+            let transcript = [];
+            try {
+                transcript = await YouTubeService.getVideoTranscript(video.id);
+                if (!transcript || !Array.isArray(transcript)) {
+                    transcript = [];
+                }
+            } catch (error) {
+                console.log(`No transcript for ${video.id}: ${error.message}`);
+                transcript = [];
+            }
+
+            // Create mock transcript if none available
+            if (transcript.length === 0) {
+                transcript = [{
+                    text: `Sample content for ${video.title}. This video discusses topics related to the title.`,
+                    start: 0,
+                    duration: 10
+                }];
+            }
+
+            // Extract keywords
+            const keywords = this.extractKeywordsFromTranscript(transcript);
+            
+            videosWithKeywords.push({
+                ...video,
+                keywords,
+                transcriptSegments: transcript.length
+            });
+
+            console.log(`📹 ${video.title}`);
+            console.log(`   Channel: ${video.channelTitle}`);
+            console.log(`   Keywords: ${keywords.slice(0, 8).join(', ')}${keywords.length > 8 ? '...' : ''}`);
+            console.log(`   Transcript: ${transcript.length} segments`);
+        }
+
+        return videosWithKeywords;
+    }
+
+    /**
+     * Batch analyze relevance of all videos at once
+     */
+    async batchAnalyzeRelevance(videosWithKeywords, userInterests) {
+        const interestsText = this.formatUserInterests(userInterests);
+        
+        // Prepare batch data for OpenAI
+        const videoSummaries = videosWithKeywords.map((video, index) => {
+            return `${index + 1}. Title: "${video.title}"
+   Channel: ${video.channelTitle}
+   Duration: ${video.duration}
+   Keywords: ${video.keywords.slice(0, 15).join(', ')}`;
+        }).join('\n\n');
+
+        const prompt = `Analyze the relevance of these ${videosWithKeywords.length} YouTube videos for a user interested in: ${interestsText}
+
+Videos to analyze:
+${videoSummaries}
+
+For each video, provide a relevance score (0.0 to 1.0) and determine if it should receive detailed analysis.
+Consider:
+1. Direct match with user interests
+2. Educational/professional value  
+3. Practical applicability
+4. Content quality indicators
+
+Respond with JSON only - an array of objects:
+[
+  {
+    "videoIndex": 1,
+    "relevanceScore": 0.85,
+    "isRelevant": true,
+    "reasoning": "Brief explanation",
+    "keyTopics": ["topic1", "topic2"]
+  },
+  ...
+]`;
+
+        try {
+            console.log(`Sending batch analysis request for ${videosWithKeywords.length} videos...`);
+            
+            const response = await AIAnalysisService.getOpenAIClient().chat.completions.create({
+                model: 'gpt-3.5-turbo',
+                messages: [{ role: 'user', content: prompt }],
+                max_tokens: 1500, // Increased for batch response
+                temperature: 0.1
+            });
+
+            const batchResults = JSON.parse(response.choices[0].message.content);
+            const cost = this.calculateTokenCost(response.usage.total_tokens, 'gpt-3.5-turbo');
+            
+            console.log(`✅ Batch analysis complete - Cost: $${cost.toFixed(4)}`);
+            console.log(`📊 Analyzed ${batchResults.length} videos in single API call`);
+
+            // Map results back to videos
+            const results = batchResults.map(result => {
+                const video = videosWithKeywords[result.videoIndex - 1];
+                return {
+                    video,
+                    relevanceScore: result.relevanceScore || 0,
+                    isRelevant: result.isRelevant || false,
+                    reasoning: result.reasoning || '',
+                    keyTopics: result.keyTopics || [],
+                    cost: cost / batchResults.length // Distribute cost
+                };
+            });
+
+            // Log summary
+            const relevantCount = results.filter(r => r.isRelevant).length;
+            console.log(`📈 Results: ${relevantCount}/${results.length} videos marked as relevant`);
+
+            return results;
+
+        } catch (error) {
+            console.error('Batch relevance analysis failed:', error);
+            
+            // Fallback to individual analysis or conservative scoring
+            return videosWithKeywords.map(video => ({
+                video,
+                relevanceScore: 0.3,
+                isRelevant: false,
+                reasoning: 'Batch analysis failed, marked as not relevant',
+                keyTopics: [],
+                cost: 0
+            }));
+        }
+    }
+
+    /**
+     * Format user interests for OpenAI prompt
+     */
+    formatUserInterests(interests) {
+        if (!interests || Object.keys(interests).length === 0) {
+            return 'general programming and technology topics';
+        }
+
+        const formatted = Object.entries(interests).map(([category, data]) => {
+            const keywords = data.keywords && data.keywords.length > 0 
+                ? ` (${data.keywords.slice(0, 5).join(', ')})` 
+                : '';
+            return `${category}${keywords}`;
+        }).join(', ');
+
+        return formatted;
+    }
+
+    /**
+     * Calculate token cost
+     */
+    calculateTokenCost(tokens, model) {
+        const costs = {
+            'gpt-3.5-turbo': 0.002 / 1000, // $0.002 per 1k tokens
+            'gpt-4': 0.03 / 1000 // $0.03 per 1k tokens
+        };
+        
+        return tokens * (costs[model] || costs['gpt-3.5-turbo']);
     }
 }
 
