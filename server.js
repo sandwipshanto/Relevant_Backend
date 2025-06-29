@@ -35,6 +35,7 @@ mongoose.connection.on('error', (err) => {
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/user', require('./routes/user'));
 app.use('/api/content', require('./routes/content'));
+app.use('/api/oauth', require('./routes/youtube'));
 
 // Admin routes for monitoring
 app.get('/api/admin/jobs/status', async (req, res) => {

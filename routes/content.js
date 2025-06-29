@@ -259,10 +259,10 @@ router.get('/feed', auth, async (req, res) => {
             duration: uc.contentId.duration,
             tags: uc.contentId.tags,
             category: uc.contentId.category,
-
+            
             // Include analysis data
             analysis: uc.contentId.analysis,
-
+            
             // Include user-specific data
             userContent: {
                 id: uc._id,
@@ -494,10 +494,10 @@ router.get('/saved/list', auth, async (req, res) => {
             duration: uc.contentId.duration,
             tags: uc.contentId.tags,
             category: uc.contentId.category,
-
+            
             // Include analysis data
             analysis: uc.contentId.analysis,
-
+            
             // Include user-specific data
             userContent: {
                 id: uc._id,
