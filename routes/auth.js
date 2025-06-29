@@ -116,6 +116,19 @@ router.post('/login', [
         user.lastActive = new Date();
         await user.save();
 
+        // Automatically sync YouTube subscriptions if connected
+        if (user.youtubeAuth && user.youtubeAuth.isConnected) {
+            try {
+                const YouTubeService = require('../services/YouTubeService');
+                // Sync in the background - don't wait for it to complete
+                YouTubeService.syncUserSubscriptions(user._id.toString()).catch(error => {
+                    console.error('Background subscription sync failed:', error);
+                });
+            } catch (error) {
+                console.error('Error initiating background subscription sync:', error);
+            }
+        }
+
         // Return JWT
         const payload = {
             user: {
@@ -137,7 +150,9 @@ router.post('/login', [
                         email: user.email,
                         name: user.name,
                         interests: user.interests,
-                        youtubeSources: user.youtubeSources
+                        youtubeSources: user.youtubeSources,
+                        youtubeConnected: user.youtubeAuth?.isConnected || false,
+                        youtubeLastSync: user.youtubeAuth?.lastSyncAt
                     }
                 });
             }

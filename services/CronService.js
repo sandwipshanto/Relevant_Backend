@@ -50,6 +50,22 @@ class CronService {
 
         this.jobs.set('user-subscriptions', userSubscriptionJob);
 
+        // Sync YouTube subscriptions for connected users every 12 hours
+        const youtubeSubscriptionSyncJob = cron.schedule('0 */12 * * *', async () => {
+            console.log('Starting YouTube subscription sync...');
+            try {
+                await this.syncAllYouTubeSubscriptions();
+                console.log('YouTube subscription sync completed');
+            } catch (error) {
+                console.error('Error during YouTube subscription sync:', error);
+            }
+        }, {
+            scheduled: false,
+            timezone: "UTC"
+        });
+
+        this.jobs.set('youtube-subscription-sync', youtubeSubscriptionSyncJob);
+
         // Cleanup old content weekly on Sunday at 2 AM UTC
         const cleanupJob = cron.schedule('0 2 * * 0', async () => {
             console.log('Starting weekly cleanup...');
@@ -69,6 +85,7 @@ class CronService {
         console.log('Cron jobs configured:');
         console.log('- Channel monitoring: Every 2 hours');
         console.log('- User subscriptions: Daily at 6 AM UTC');
+        console.log('- YouTube subscription sync: Every 12 hours');
         console.log('- Weekly cleanup: Sunday at 2 AM UTC');
     }
 
@@ -120,6 +137,50 @@ class CronService {
 
         } catch (error) {
             console.error('Error during cleanup:', error);
+            throw error;
+        }
+    }
+
+    /**
+     * Sync YouTube subscriptions for all connected users
+     */
+    async syncAllYouTubeSubscriptions() {
+        try {
+            console.log('Starting YouTube subscription sync for all connected users...');
+
+            const User = require('../models/User');
+            const YouTubeService = require('./YouTubeService');
+
+            // Find all users with connected YouTube accounts
+            const connectedUsers = await User.find({
+                'youtubeAuth.isConnected': true
+            }).select('_id email youtubeAuth.lastSyncAt');
+
+            console.log(`Found ${connectedUsers.length} users with connected YouTube accounts`);
+
+            let successCount = 0;
+            let errorCount = 0;
+
+            for (const user of connectedUsers) {
+                try {
+                    await YouTubeService.syncUserSubscriptions(user._id.toString());
+                    successCount++;
+                    console.log(`✅ Synced subscriptions for user ${user._id}`);
+                } catch (error) {
+                    errorCount++;
+                    console.error(`❌ Failed to sync subscriptions for user ${user._id}:`, error.message);
+                }
+            }
+
+            console.log(`YouTube subscription sync completed: ${successCount} successful, ${errorCount} failed`);
+
+            return {
+                totalUsers: connectedUsers.length,
+                successCount,
+                errorCount
+            };
+        } catch (error) {
+            console.error('Error syncing YouTube subscriptions for all users:', error);
             throw error;
         }
     }

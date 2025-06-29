@@ -7,6 +7,153 @@ class YouTubeService {
             version: 'v3',
             auth: process.env.YOUTUBE_API_KEY || 'YOUR_API_KEY' // We'll use OAuth later
         });
+
+        // Initialize OAuth2 client
+        this.oauth2Client = new google.auth.OAuth2(
+            process.env.YOUTUBE_CLIENT_ID,
+            process.env.YOUTUBE_CLIENT_SECRET,
+            process.env.YOUTUBE_REDIRECT_URI || 'http://localhost:3000/auth/youtube/callback'
+        );
+    }
+
+    /**
+     * Get OAuth2 authorization URL
+     */
+    getAuthUrl() {
+        const scopes = [
+            'https://www.googleapis.com/auth/youtube.readonly'
+        ];
+
+        return this.oauth2Client.generateAuthUrl({
+            access_type: 'offline',
+            scope: scopes,
+            prompt: 'consent'
+        });
+    }
+
+    /**
+     * Exchange authorization code for tokens
+     */
+    async getTokensFromCode(code) {
+        try {
+            const { tokens } = await this.oauth2Client.getAccessToken(code);
+            return tokens;
+        } catch (error) {
+            console.error('Error getting tokens from code:', error);
+            throw error;
+        }
+    }
+
+    /**
+     * Set OAuth2 credentials
+     */
+    setCredentials(tokens) {
+        this.oauth2Client.setCredentials(tokens);
+    }
+
+    /**
+     * Refresh access token
+     */
+    async refreshAccessToken(refreshToken) {
+        try {
+            this.oauth2Client.setCredentials({
+                refresh_token: refreshToken
+            });
+
+            const { credentials } = await this.oauth2Client.refreshAccessToken();
+            return credentials;
+        } catch (error) {
+            console.error('Error refreshing access token:', error);
+            throw error;
+        }
+    }
+
+    /**
+     * Get user's YouTube subscriptions
+     */
+    async getUserSubscriptions(accessToken, maxResults = 50) {
+        try {
+            // Create a new YouTube client with the user's access token
+            const authenticatedYoutube = google.youtube({
+                version: 'v3',
+                auth: this.oauth2Client
+            });
+
+            // Set the access token
+            this.oauth2Client.setCredentials({
+                access_token: accessToken
+            });
+
+            let allSubscriptions = [];
+            let nextPageToken = null;
+
+            do {
+                const response = await authenticatedYoutube.subscriptions.list({
+                    part: 'snippet',
+                    mine: true,
+                    maxResults: Math.min(maxResults, 50), // API limit is 50 per request
+                    pageToken: nextPageToken
+                });
+
+                const subscriptions = response.data.items.map(item => ({
+                    channelId: item.snippet.resourceId.channelId,
+                    channelTitle: item.snippet.title,
+                    channelUrl: `https://youtube.com/channel/${item.snippet.resourceId.channelId}`,
+                    description: item.snippet.description,
+                    thumbnails: item.snippet.thumbnails,
+                    subscribedAt: item.snippet.publishedAt
+                }));
+
+                allSubscriptions = allSubscriptions.concat(subscriptions);
+                nextPageToken = response.data.nextPageToken;
+
+                // If we've reached the desired number of results, break
+                if (allSubscriptions.length >= maxResults) {
+                    allSubscriptions = allSubscriptions.slice(0, maxResults);
+                    break;
+                }
+            } while (nextPageToken);
+
+            return allSubscriptions;
+        } catch (error) {
+            console.error('Error fetching user subscriptions:', error);
+            throw error;
+        }
+    }
+
+    /**
+     * Check if user's email is connected to a YouTube account
+     */
+    async checkYouTubeConnection(accessToken) {
+        try {
+            this.oauth2Client.setCredentials({
+                access_token: accessToken
+            });
+
+            const authenticatedYoutube = google.youtube({
+                version: 'v3',
+                auth: this.oauth2Client
+            });
+
+            // Get the user's channel information
+            const response = await authenticatedYoutube.channels.list({
+                part: 'snippet',
+                mine: true
+            });
+
+            if (response.data.items.length > 0) {
+                return {
+                    isConnected: true,
+                    channelId: response.data.items[0].id,
+                    channelTitle: response.data.items[0].snippet.title
+                };
+            }
+
+            return { isConnected: false };
+        } catch (error) {
+            console.error('Error checking YouTube connection:', error);
+            return { isConnected: false };
+        }
     }
 
     /**
@@ -233,6 +380,87 @@ class YouTubeService {
             return `${hours}:${minutes.toString().padStart(2, '0')}:${remainingSeconds.toString().padStart(2, '0')}`;
         } else {
             return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`;
+        }
+    }
+
+    /**
+     * Sync user's YouTube subscriptions
+     */
+    async syncUserSubscriptions(userId) {
+        try {
+            const User = require('../models/User');
+            const user = await User.findById(userId);
+
+            if (!user || !user.youtubeAuth || !user.youtubeAuth.isConnected) {
+                throw new Error('User does not have YouTube account connected');
+            }
+
+            let accessToken = user.youtubeAuth.accessToken;
+
+            // Check if token needs to be refreshed
+            if (new Date() >= user.youtubeAuth.expiryDate) {
+                try {
+                    const newTokens = await this.refreshAccessToken(user.youtubeAuth.refreshToken);
+                    accessToken = newTokens.access_token;
+
+                    // Update user with new tokens
+                    user.youtubeAuth.accessToken = newTokens.access_token;
+                    user.youtubeAuth.expiryDate = new Date(newTokens.expiry_date);
+                    if (newTokens.refresh_token) {
+                        user.youtubeAuth.refreshToken = newTokens.refresh_token;
+                    }
+                } catch (refreshError) {
+                    console.error('Error refreshing token:', refreshError);
+                    throw new Error('Unable to refresh YouTube access token. Please reconnect your account.');
+                }
+            }
+
+            // Fetch subscriptions
+            const subscriptions = await this.getUserSubscriptions(accessToken);
+
+            // Track changes
+            let addedCount = 0;
+            let updatedCount = 0;
+
+            // Add new subscriptions and update existing ones
+            for (const subscription of subscriptions) {
+                const existingIndex = user.youtubeSources.findIndex(
+                    source => source.channelId === subscription.channelId
+                );
+
+                if (existingIndex === -1) {
+                    // Add new subscription
+                    user.youtubeSources.push({
+                        channelId: subscription.channelId,
+                        channelTitle: subscription.channelTitle,
+                        channelUrl: subscription.channelUrl,
+                        addedAt: new Date()
+                    });
+                    addedCount++;
+                } else {
+                    // Update existing subscription
+                    user.youtubeSources[existingIndex].channelTitle = subscription.channelTitle;
+                    user.youtubeSources[existingIndex].channelUrl = subscription.channelUrl;
+                    updatedCount++;
+                }
+            }
+
+            // Update last sync time
+            user.youtubeAuth.lastSyncAt = new Date();
+            await user.save();
+
+            console.log(`Synced subscriptions for user ${userId}: ${addedCount} added, ${updatedCount} updated`);
+
+            return {
+                totalSubscriptions: subscriptions.length,
+                addedCount,
+                updatedCount,
+                syncedAt: user.youtubeAuth.lastSyncAt
+            };
+
+        } catch (error) {
+            console.error('Error syncing user subscriptions:', error);
+            throw error;
         }
     }
 }

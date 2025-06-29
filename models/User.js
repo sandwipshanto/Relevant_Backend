@@ -30,6 +30,18 @@ const UserSchema = new mongoose.Schema({
             default: Date.now,
         }
     }],
+    // YouTube OAuth information
+    youtubeAuth: {
+        accessToken: String,
+        refreshToken: String,
+        expiryDate: Date,
+        isConnected: {
+            type: Boolean,
+            default: false
+        },
+        connectedAt: Date,
+        lastSyncAt: Date
+    },
     preferences: {
         contentFrequency: {
             type: String,
