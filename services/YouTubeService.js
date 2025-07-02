@@ -36,7 +36,7 @@ class YouTubeService {
      */
     async getTokensFromCode(code) {
         try {
-            const { tokens } = await this.oauth2Client.getAccessToken(code);
+            const { tokens } = await this.oauth2Client.getToken(code);
             return tokens;
         } catch (error) {
             console.error('Error getting tokens from code:', error);
