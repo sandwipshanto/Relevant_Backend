@@ -289,19 +289,25 @@ ${index + 1}. Title: ${content.title}
    Channel: ${content.channelTitle}
 `).join('\n')}
 
-For each item, provide a relevance score (0.0 to 1.0) based on:
-1. How well it matches the user's interests
+For each item, provide a realistic relevance score (0.0 to 1.0) based on:
+1. How well it matches the user's specific interests
 2. Content quality and educational value
 3. Likelihood to be valuable to the user
 
-Respond with only a JSON array of scores: [0.85, 0.23, 0.91, ...]`;
+IMPORTANT: Be realistic with scores. Most content should score 0.1-0.4 unless genuinely relevant.
+- 0.0-0.3: Not relevant to user interests
+- 0.4-0.6: Somewhat related
+- 0.7-0.8: Good match
+- 0.9-1.0: Perfect match
+
+Respond with only a JSON array of scores (no examples): [score1, score2, score3, ...]`;
 
         try {
             const response = await this.getOpenAIClient().chat.completions.create({
                 model: "gpt-3.5-turbo",
                 messages: [{ role: "user", content: prompt }],
                 max_tokens: 200,
-                temperature: 0.3
+                temperature: 0.4 // Increased for more varied responses
             });
 
             const scoresText = response.choices[0].message.content.trim();
@@ -363,39 +369,50 @@ Provide analysis in JSON format:
     async analyzeVideoRelevance(videoContent, userInterests) {
         const interestsText = this.formatUserInterests(userInterests);
 
-        const prompt = `Analyze if this YouTube video is relevant to the user's interests: ${interestsText}
+        // Debug: Log what interests are being used
+        console.log(`Analyzing relevance for "${videoContent.title}" against interests: ${interestsText.substring(0, 100)}...`);
 
-Video Information:
-Title: ${videoContent.title}
+        const prompt = `You are analyzing YouTube video relevance for a user interested in: ${interestsText}
+
+Video to analyze:
+Title: "${videoContent.title}"
 Channel: ${videoContent.channelTitle}
 Duration: ${videoContent.duration}
-Key Topics: ${videoContent.keywords.slice(0, 15).join(', ')}
+Keywords: ${videoContent.keywords.slice(0, 15).join(', ')}
 
-Rate the relevance from 0.0 to 1.0 and determine if it should be processed further.
-Consider:
-1. Direct match with user interests
-2. Educational/professional value
-3. Practical applicability
-4. Content quality indicators
+Rate this video's relevance from 0.0 to 1.0 based on how well it matches the user's specific interests.
 
-Respond with JSON only:
+SCORING GUIDE:
+- 0.0-0.3: Completely irrelevant (entertainment, vlogs, unrelated topics)
+- 0.4-0.6: Somewhat related but not directly useful
+- 0.7-0.8: Good match with user interests
+- 0.9-1.0: Perfect match, highly valuable content
+
+Be realistic and vary your scores. Most content should score between 0.1-0.4 unless it's genuinely relevant.
+
+Example: A Google Flights tutorial would only be relevant for someone interested in travel/productivity, not for someone interested in programming.
+
+Return JSON:
 {
-  "relevanceScore": 0.85,
-  "isRelevant": true,
-  "reasoning": "Brief explanation of why it's relevant/not relevant",
-  "keyTopics": ["topic1", "topic2"]
+  "relevanceScore": [actual_score_between_0_and_1],
+  "isRelevant": [true_if_score_above_0.7],
+  "reasoning": "Explain why this score was given",
+  "keyTopics": ["main", "topics"]
 }`;
 
         try {
             const response = await this.getOpenAIClient().chat.completions.create({
                 model: 'gpt-3.5-turbo',
                 messages: [{ role: 'user', content: prompt }],
-                max_tokens: 150,
-                temperature: 0.1
+                max_tokens: 200,
+                temperature: 0.4 // Increased for more varied responses
             });
 
             const result = JSON.parse(response.choices[0].message.content);
             const cost = this.calculateCost(response.usage.total_tokens, 'gpt-3.5-turbo');
+
+            // Debug: Log the AI's reasoning
+            console.log(`AI Relevance: ${result.relevanceScore} - Reasoning: ${result.reasoning}`);
 
             return {
                 relevanceScore: result.relevanceScore || 0,
@@ -406,11 +423,26 @@ Respond with JSON only:
             };
         } catch (error) {
             console.error('Relevance analysis failed:', error);
-            // Return conservative relevance score
+            // Return realistic low relevance score based on basic keyword matching
+            const titleLower = videoContent.title.toLowerCase();
+            const interestsLower = interestsText.toLowerCase();
+
+            // Basic keyword matching fallback
+            let fallbackScore = 0.1; // Default very low
+            const interestKeywords = interestsLower.split(/[,\s]+/).filter(word => word.length > 3);
+
+            for (const keyword of interestKeywords) {
+                if (titleLower.includes(keyword)) {
+                    fallbackScore += 0.15; // Small boost per matching keyword
+                }
+            }
+
+            fallbackScore = Math.min(fallbackScore, 0.5); // Cap at 0.5 for fallback
+
             return {
-                relevanceScore: 0.3,
-                isRelevant: false,
-                reasoning: 'Analysis failed, marked as not relevant',
+                relevanceScore: fallbackScore,
+                isRelevant: fallbackScore > 0.7,
+                reasoning: 'AI analysis failed, using basic keyword matching',
                 keyTopics: [],
                 cost: 0
             };
