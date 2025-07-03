@@ -16,14 +16,14 @@ class AIAnalysisService {
         this.openai = null;
 
         this.config = {
-            minTitleRelevance: 0.3,
+            minTitleRelevance: 0.7, // Only show high-relevance content (70%+)
             minDescriptionLength: 50,
             maxDescriptionLength: 5000,
             keywordMatchThreshold: 2,
             batchSize: 5, // Smaller batches for OpenAI
             quickScoreThreshold: 0.6,
             maxFullAnalysis: 3, // Limit expensive full analysis
-            fullAnalysisThreshold: 0.8,
+            fullAnalysisThreshold: 0.75, // Slightly lower threshold for full analysis
             minDurationSeconds: 120, // 2 minutes minimum
             maxDurationSeconds: 7200 // 2 hours maximum
         };
@@ -97,14 +97,14 @@ class AIAnalysisService {
         totalCost += quickAnalysisCost;
         console.log(`Stage 4 (OpenAI Quick): ${quickAnalyzed.length} items analyzed (Cost: $${quickAnalysisCost.toFixed(4)})`);
 
-        // Stage 5: OpenAI Full Analysis for top candidates (HIGH COST - LIMITED)
+        // Stage 5: OpenAI Full Analysis for top candidates (REDUCED COST)
         const topCandidates = quickAnalyzed
             .filter(content => content.quickAiScore >= this.config.fullAnalysisThreshold)
             .sort((a, b) => b.quickAiScore - a.quickAiScore)
             .slice(0, this.config.maxFullAnalysis);
 
         const fullyAnalyzed = await this.stage5_openaiFullAnalysis(topCandidates, userInterests);
-        const fullAnalysisCost = fullyAnalyzed.length * 0.05; // Estimated cost per item
+        const fullAnalysisCost = fullyAnalyzed.length * 0.008; // Reduced cost estimate for GPT-3.5-turbo
         totalCost += fullAnalysisCost;
         console.log(`Stage 5 (OpenAI Full): ${fullyAnalyzed.length} items analyzed (Cost: $${fullAnalysisCost.toFixed(4)})`);
 
@@ -346,7 +346,7 @@ Provide analysis in JSON format:
 }`;
 
         const response = await this.getOpenAIClient().chat.completions.create({
-            model: "gpt-4",
+            model: "gpt-3.5-turbo", // Changed from gpt-4 to reduce costs
             messages: [{ role: "user", content: prompt }],
             max_tokens: 800,
             temperature: 0.3
@@ -457,14 +457,14 @@ Respond with JSON only:
 
         try {
             const response = await this.getOpenAIClient().chat.completions.create({
-                model: 'gpt-4',
+                model: 'gpt-3.5-turbo', // Changed from gpt-4 to reduce costs
                 messages: [{ role: 'user', content: prompt }],
                 max_tokens: 600,
                 temperature: 0.2
             });
 
             const result = JSON.parse(response.choices[0].message.content);
-            const cost = this.calculateCost(response.usage.total_tokens, 'gpt-4');
+            const cost = this.calculateCost(response.usage.total_tokens, 'gpt-3.5-turbo');
 
             return {
                 summary: result.summary || '',
