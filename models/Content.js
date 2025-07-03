@@ -78,6 +78,10 @@ const ContentSchema = new mongoose.Schema({
         type: Boolean,
         default: false,
     },
+    processedAt: {
+        type: Date,
+        default: null,
+    },
     processingError: String,
 
     createdAt: {
@@ -90,5 +94,7 @@ const ContentSchema = new mongoose.Schema({
 ContentSchema.index({ publishedAt: -1 });
 ContentSchema.index({ source: 1, publishedAt: -1 });
 ContentSchema.index({ 'sourceChannel.id': 1, publishedAt: -1 });
+ContentSchema.index({ sourceId: 1 }); // For YouTube video IDs
+ContentSchema.index({ processedAt: -1 }); // For tracking processed content
 
 module.exports = mongoose.model('Content', ContentSchema);

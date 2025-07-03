@@ -11,7 +11,12 @@ class SimpleJobQueue {
         this.activeJobs = new Map();
         this.jobId = 0;
         this.isProcessing = false;
+        this.useOpenAI = process.env.OPENAI_API_KEY && process.env.USE_OPENAI !== 'false';
         this.setupProcessor();
+        
+        if (!this.useOpenAI) {
+            console.log('🔄 Running in keyword-based analysis mode (OpenAI disabled)');
+        }
     }
 
     setupProcessor() {
@@ -43,6 +48,9 @@ class SimpleJobQueue {
                     break;
                 case 'process-user-subscriptions':
                     await this.processUserSubscriptions(job.data.userId);
+                    break;
+                case 'process-todays-content':
+                    await this.processTodaysContentOnly(job.data.userId);
                     break;
             }
 
@@ -81,7 +89,10 @@ class SimpleJobQueue {
             };
 
             // Check if content already exists
-            let content = await Content.findOne({ videoId });
+            let content = await Content.findOne({
+                sourceId: videoId,
+                source: 'youtube'
+            });
 
             if (!content) {
                 // Try to get transcript (may fail for some videos)
@@ -276,6 +287,7 @@ class SimpleJobQueue {
                         overallRelevanceScore: (analysis.analysis?.relevanceScore || 0) * 100
                     },
                     processed: true,
+                    processedAt: new Date(),
                     processingError: null
                 });
 
@@ -394,16 +406,20 @@ class SimpleJobQueue {
                         }];
                     }
 
-                    // Filter out videos that already exist
+                    // Filter out videos that already exist and have been processed
                     const newVideos = [];
                     for (const video of videos) {
                         const existingContent = await Content.findOne({
-                            videoId: video.id,
-                            processedAt: { $gte: new Date(Date.now() - 24 * 60 * 60 * 1000) }
+                            sourceId: video.id,
+                            source: 'youtube',
+                            processed: true,
+                            processedAt: { $exists: true }
                         });
 
                         if (!existingContent) {
                             newVideos.push(video);
+                        } else {
+                            console.log(`Skipping already processed video: ${video.title}`);
                         }
                     }
 
@@ -540,11 +556,17 @@ class SimpleJobQueue {
                         const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
 
                         if (videoDate >= sevenDaysAgo) {
-                            const existingContent = await Content.findOne({ videoId: video.id });
+                            const existingContent = await Content.findOne({
+                                sourceId: video.id,
+                                source: 'youtube',
+                                processed: true
+                            });
 
                             if (!existingContent) {
                                 await this.queueVideoProcessing(video.id, video, channelData.users);
                                 channelProcessed++;
+                            } else {
+                                console.log(`Skipping already processed video: ${video.title}`);
                             }
                         }
                     }
@@ -629,7 +651,26 @@ class SimpleJobQueue {
         this.jobs.set(jobId, job);
         console.log(`Queued user subscription processing job ${jobId} for user ${userId}`);
 
-        return job;
+        return jobId;
+    }
+
+    /**
+     * Queue today's content processing for a user
+     */
+    async queueTodaysContentProcessing(userId) {
+        const jobId = ++this.jobId;
+        const job = {
+            id: jobId,
+            type: 'process-todays-content',
+            data: { userId },
+            createdAt: new Date(),
+            status: 'queued'
+        };
+
+        this.jobs.set(jobId, job);
+        console.log(`Queued today's content processing job ${jobId} for user ${userId}`);
+
+        return jobId;
     }
 
     /**
@@ -995,6 +1036,12 @@ class SimpleJobQueue {
      * Batch analyze relevance of all videos at once
      */
     async batchAnalyzeRelevance(videosWithKeywords, userInterests) {
+        // Use fallback method if OpenAI is disabled or not configured
+        if (!this.useOpenAI) {
+            console.log('🔄 Using keyword-based analysis (OpenAI disabled)');
+            return await this.fallbackRelevanceAnalysis(videosWithKeywords, userInterests);
+        }
+
         const interestsText = this.formatUserInterests(userInterests);
 
         // Prepare batch data for OpenAI
@@ -1066,17 +1113,169 @@ Respond with JSON only - an array of objects:
 
         } catch (error) {
             console.error('Batch relevance analysis failed:', error);
+            console.error('Error details:', {
+                message: error.message,
+                stack: error.stack?.substring(0, 500),
+                name: error.name
+            });
 
-            // Fallback to individual analysis or conservative scoring
-            return videosWithKeywords.map(video => ({
-                video,
-                relevanceScore: 0.3,
-                isRelevant: false,
-                reasoning: 'Batch analysis failed, marked as not relevant',
-                keyTopics: [],
-                cost: 0
-            }));
+            // Check if it's an API key issue
+            if (error.message?.includes('API key') || error.message?.includes('authentication')) {
+                console.error('❌ OpenAI API key issue detected');
+            }
+
+            // Use fallback keyword-based analysis instead of marking all as irrelevant
+            console.log('🔄 Falling back to keyword-based relevance analysis...');
+            return await this.fallbackRelevanceAnalysis(videosWithKeywords, userInterests);
         }
+    }
+
+    /**
+     * Fallback relevance analysis without OpenAI
+     * Uses keyword matching and heuristics for scoring
+     */
+    async fallbackRelevanceAnalysis(videosWithKeywords, userInterests) {
+        console.log('🔄 Using fallback relevance analysis (keyword-based)');
+        
+        const results = videosWithKeywords.map(video => {
+            const score = this.calculateKeywordRelevanceScore(video, userInterests);
+            const isRelevant = score >= 0.5; // Lower threshold for fallback method
+            
+            return {
+                video,
+                relevanceScore: score,
+                isRelevant,
+                reasoning: `Keyword-based analysis (API unavailable)`,
+                keyTopics: this.extractTopicsFromVideo(video),
+                cost: 0
+            };
+        });
+
+        const relevantCount = results.filter(r => r.isRelevant).length;
+        console.log(`📈 Fallback Results: ${relevantCount}/${results.length} videos marked as relevant`);
+        
+        return results;
+    }
+
+    /**
+     * Calculate relevance score based on keyword matching
+     */
+    calculateKeywordRelevanceScore(video, userInterests) {
+        let score = 0.0;
+        const title = video.title.toLowerCase();
+        const keywords = video.keywords.map(k => k.toLowerCase());
+        const channelTitle = video.channelTitle.toLowerCase();
+        
+        // Get user interest keywords
+        const userKeywords = this.extractUserKeywords(userInterests);
+        
+        // Title matching (highest weight)
+        for (const userKeyword of userKeywords) {
+            if (title.includes(userKeyword.toLowerCase())) {
+                score += 0.3;
+            }
+        }
+        
+        // Keyword matching (medium weight)
+        for (const userKeyword of userKeywords) {
+            for (const videoKeyword of keywords) {
+                if (videoKeyword.includes(userKeyword.toLowerCase()) || 
+                    userKeyword.toLowerCase().includes(videoKeyword)) {
+                    score += 0.2;
+                }
+            }
+        }
+        
+        // Channel matching (lower weight)
+        for (const userKeyword of userKeywords) {
+            if (channelTitle.includes(userKeyword.toLowerCase())) {
+                score += 0.1;
+            }
+        }
+        
+        // Quality indicators
+        const qualityKeywords = ['tutorial', 'guide', 'how to', 'explained', 'course', 'learn'];
+        for (const quality of qualityKeywords) {
+            if (title.includes(quality)) {
+                score += 0.1;
+                break;
+            }
+        }
+        
+        // Penalize clickbait
+        const clickbaitWords = ['shocking', 'insane', 'crazy', 'you won\'t believe', 'clickbait'];
+        for (const clickbait of clickbaitWords) {
+            if (title.includes(clickbait)) {
+                score -= 0.2;
+                break;
+            }
+        }
+        
+        // Cap the score at 1.0
+        return Math.min(score, 1.0);
+    }
+
+    /**
+     * Extract keywords from user interests
+     */
+    extractUserKeywords(userInterests) {
+        const keywords = [];
+        
+        if (!userInterests || typeof userInterests !== 'object') {
+            return ['programming', 'technology', 'software', 'development'];
+        }
+        
+        for (const [category, data] of Object.entries(userInterests)) {
+            // Add category name
+            keywords.push(category);
+            
+            // Add keywords if they exist
+            if (data.keywords && Array.isArray(data.keywords)) {
+                keywords.push(...data.keywords);
+            }
+            
+            // Add subcategory names and keywords
+            if (data.subcategories) {
+                for (const [subcat, subdata] of Object.entries(data.subcategories)) {
+                    keywords.push(subcat);
+                    if (subdata.keywords && Array.isArray(subdata.keywords)) {
+                        keywords.push(...subdata.keywords);
+                    }
+                }
+            }
+        }
+        
+        return [...new Set(keywords)]; // Remove duplicates
+    }
+
+    /**
+     * Extract topics from video data
+     */
+    extractTopicsFromVideo(video) {
+        const topics = [];
+        const title = video.title.toLowerCase();
+        
+        // Common tech topics
+        const topicMap = {
+            'ai': ['artificial intelligence', 'machine learning', 'ai', 'ml', 'neural'],
+            'web development': ['web', 'html', 'css', 'javascript', 'react', 'vue', 'angular'],
+            'programming': ['programming', 'coding', 'developer', 'software'],
+            'mobile': ['mobile', 'ios', 'android', 'app development'],
+            'data science': ['data science', 'analytics', 'data', 'python', 'r'],
+            'devops': ['devops', 'docker', 'kubernetes', 'deployment', 'cloud'],
+            'tutorial': ['tutorial', 'guide', 'how to', 'course', 'learn']
+        };
+        
+        for (const [topic, keywords] of Object.entries(topicMap)) {
+            for (const keyword of keywords) {
+                if (title.includes(keyword)) {
+                    topics.push(topic);
+                    break;
+                }
+            }
+        }
+        
+        return topics.length > 0 ? topics : ['general'];
     }
 
     /**
@@ -1232,6 +1431,128 @@ Respond with JSON only - an array of objects:
         }
 
         return personalizedHighlights;
+    }
+
+    async processTodaysContentOnly(userId) {
+        try {
+            console.log(`Processing only today's content for user: ${userId}`);
+
+            const user = await User.findById(userId);
+            if (!user || !user.youtubeSources || user.youtubeSources.length === 0) {
+                return { success: false, reason: 'No YouTube sources found' };
+            }
+
+            // Get start and end of today in UTC
+            const today = new Date();
+            const startOfToday = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+            const endOfToday = new Date(startOfToday.getTime() + 24 * 60 * 60 * 1000);
+
+            console.log(`Looking for content published between ${startOfToday.toISOString()} and ${endOfToday.toISOString()}`);
+
+            let todaysVideos = [];
+            const channelResults = [];
+
+            for (const source of user.youtubeSources) {
+                try {
+                    let videos = [];
+                    try {
+                        // Get recent videos from channel
+                        videos = await YouTubeService.getChannelVideos(source.channelId, 10);
+                    } catch (error) {
+                        console.log(`Failed to get videos from ${source.channelId}, skipping`);
+                        continue;
+                    }
+
+                    // Filter for today's videos that haven't been processed
+                    const newTodaysVideos = [];
+                    for (const video of videos) {
+                        const publishedDate = new Date(video.publishedAt);
+
+                        // Check if video was published today
+                        if (publishedDate >= startOfToday && publishedDate < endOfToday) {
+                            // Check if already processed
+                            const existingContent = await Content.findOne({
+                                sourceId: video.id,
+                                source: 'youtube',
+                                processed: true,
+                                processedAt: { $exists: true }
+                            });
+
+                            if (!existingContent) {
+                                newTodaysVideos.push(video);
+                                console.log(`Found new today's video: ${video.title}`);
+                            } else {
+                                console.log(`Today's video already processed: ${video.title}`);
+                            }
+                        }
+                    }
+
+                    todaysVideos.push(...newTodaysVideos);
+                    channelResults.push({
+                        channelId: source.channelId,
+                        channelTitle: source.channelTitle,
+                        todaysVideosFound: newTodaysVideos.length
+                    });
+
+                } catch (error) {
+                    console.error(`Error collecting today's videos from channel ${source.channelId}:`, error);
+                    channelResults.push({
+                        channelId: source.channelId,
+                        channelTitle: source.channelTitle,
+                        error: error.message
+                    });
+                }
+            }
+
+            if (todaysVideos.length === 0) {
+                console.log('No new videos from today found to process');
+                return {
+                    success: true,
+                    userId,
+                    totalVideosQueued: 0,
+                    channelResults
+                };
+            }
+
+            console.log(`Found ${todaysVideos.length} new videos from today across ${user.youtubeSources.length} channels`);
+
+            // Process today's videos using existing batch analysis
+            const videosWithKeywords = await this.extractKeywordsFromAllVideos(todaysVideos);
+            const aggregatedInterests = this.aggregateUserInterests([user]);
+            const relevanceResults = await this.batchAnalyzeRelevance(videosWithKeywords, aggregatedInterests);
+
+            let processedCount = 0;
+            for (const result of relevanceResults) {
+                if (result.isRelevant) {
+                    console.log(`✅ Processing relevant today's video: ${result.video.title}`);
+                    await this.queueVideoProcessing(result.video.id, result.video, [userId]);
+                    processedCount++;
+                } else {
+                    console.log(`❌ Skipping irrelevant today's video: ${result.video.title} (score: ${result.relevanceScore})`);
+                }
+            }
+
+            console.log(`Today's content processing complete - Analyzed: ${todaysVideos.length}, Queued: ${processedCount}`);
+
+            return {
+                success: true,
+                userId,
+                totalVideosAnalyzed: todaysVideos.length,
+                totalVideosQueued: processedCount,
+                relevanceResults: relevanceResults.map(r => ({
+                    videoId: r.video.id,
+                    title: r.video.title,
+                    relevanceScore: r.relevanceScore,
+                    isRelevant: r.isRelevant,
+                    reasoning: r.reasoning
+                })),
+                channelResults
+            };
+
+        } catch (error) {
+            console.error(`Error processing today's content for user ${userId}:`, error);
+            throw error;
+        }
     }
 }
 

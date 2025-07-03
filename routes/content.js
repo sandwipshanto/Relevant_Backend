@@ -83,6 +83,35 @@ router.post('/process-subscriptions', auth, async (req, res) => {
     }
 });
 
+// Process today's content only (avoid re-analyzing old content)
+router.post('/process-today', auth, async (req, res) => {
+    try {
+        const user = await User.findById(req.user.id);
+        if (!user || !user.youtubeSources || user.youtubeSources.length === 0) {
+            return res.status(400).json({
+                success: false,
+                msg: 'No YouTube subscriptions found'
+            });
+        }
+
+        const job = await JobQueue.queueTodaysContentProcessing(req.user.id);
+
+        res.json({
+            success: true,
+            msg: 'Today\'s content queued for processing (no duplicate analysis)',
+            jobId: job,
+            subscriptionsCount: user.youtubeSources.length
+        });
+
+    } catch (error) {
+        console.error('Process today\'s content error:', error);
+        res.status(500).json({
+            success: false,
+            msg: 'Error processing today\'s content'
+        });
+    }
+});
+
 // Get video highlights and segments
 router.get('/:id/highlights', auth, async (req, res) => {
     try {
@@ -259,10 +288,10 @@ router.get('/feed', auth, async (req, res) => {
             duration: uc.contentId.duration,
             tags: uc.contentId.tags,
             category: uc.contentId.category,
-            
+
             // Include analysis data
             analysis: uc.contentId.analysis,
-            
+
             // Include user-specific data
             userContent: {
                 id: uc._id,
@@ -494,10 +523,10 @@ router.get('/saved/list', auth, async (req, res) => {
             duration: uc.contentId.duration,
             tags: uc.contentId.tags,
             category: uc.contentId.category,
-            
+
             // Include analysis data
             analysis: uc.contentId.analysis,
-            
+
             // Include user-specific data
             userContent: {
                 id: uc._id,
