@@ -25,23 +25,24 @@ class CronService {
 
         this.jobs.set('channel-monitoring', channelMonitoringJob);
 
-        // Process user subscriptions daily at 6 AM UTC
+        // Process today's new content daily at 6 AM UTC (avoid re-analyzing old content)
         const userSubscriptionJob = cron.schedule('0 6 * * *', async () => {
-            console.log('Starting daily user subscription processing...');
+            console.log('Starting daily processing of today\'s new content...');
             try {
                 const users = await User.find({
                     'youtubeSources.0': { $exists: true }
                 }).select('_id');
 
-                console.log(`Processing subscriptions for ${users.length} users`);
+                console.log(`Processing today's content for ${users.length} users`);
 
                 for (const user of users) {
-                    await JobQueue.queueUserSubscriptionProcessing(user._id.toString());
+                    // Use today's content processing to avoid analyzing content twice
+                    await JobQueue.queueTodaysContentProcessing(user._id.toString());
                 }
 
-                console.log('All user subscription jobs queued successfully');
+                console.log('All today\'s content processing jobs queued successfully');
             } catch (error) {
-                console.error('Error processing user subscriptions:', error);
+                console.error('Error processing today\'s content:', error);
             }
         }, {
             scheduled: false,
@@ -84,7 +85,7 @@ class CronService {
 
         console.log('Cron jobs configured:');
         console.log('- Channel monitoring: Every 2 hours');
-        console.log('- User subscriptions: Daily at 6 AM UTC');
+        console.log('- Today\'s content processing: Daily at 6 AM UTC (no duplicate analysis)');
         console.log('- YouTube subscription sync: Every 12 hours');
         console.log('- Weekly cleanup: Sunday at 2 AM UTC');
     }
@@ -221,6 +222,11 @@ class CronService {
     async triggerUserSubscriptionProcessing(userId) {
         console.log(`Manually triggering subscription processing for user: ${userId}`);
         return await JobQueue.queueUserSubscriptionProcessing(userId);
+    }
+
+    async triggerTodaysContentProcessing(userId) {
+        console.log(`Manually triggering today's content processing for user: ${userId}`);
+        return await JobQueue.queueTodaysContentProcessing(userId);
     }
 
     async triggerCleanup() {
