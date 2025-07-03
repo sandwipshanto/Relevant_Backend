@@ -13,7 +13,7 @@ class SimpleJobQueue {
         this.isProcessing = false;
         this.useOpenAI = process.env.OPENAI_API_KEY && process.env.USE_OPENAI !== 'false';
         this.setupProcessor();
-        
+
         if (!this.useOpenAI) {
             console.log('🔄 Running in keyword-based analysis mode (OpenAI disabled)');
         }
@@ -109,9 +109,9 @@ class SimpleJobQueue {
                 }
 
                 if (transcript.length === 0) {
-                    // Create content without transcript for testing
+                    // No transcript available - use title and description only
                     transcript = [{
-                        text: `Sample transcript for ${videoData.title}. This would normally contain the actual video transcript for AI analysis.`,
+                        text: `${videoData.title}. ${videoData.description ? videoData.description.substring(0, 200) : ''}`,
                         start: 0,
                         duration: 10
                     }];
@@ -535,19 +535,8 @@ class SimpleJobQueue {
                     try {
                         videos = await YouTubeService.getChannelVideos(channelId, 3);
                     } catch (error) {
-                        console.log(`Failed to get videos from ${channelId}, creating mock data`);
-                        videos = [{
-                            id: `mock_monitor_${Date.now()}_${Math.random()}`,
-                            title: `Recent Mock Video from ${channelData.channelTitle}`,
-                            description: 'Mock video for channel monitoring test',
-                            channelId: channelId,
-                            channelTitle: channelData.channelTitle,
-                            publishedAt: new Date().toISOString(),
-                            duration: 'PT15M20S',
-                            thumbnails: {
-                                default: { url: 'https://i.ytimg.com/vi/mock/default.jpg' }
-                            }
-                        }];
+                        console.log(`Failed to get videos from ${channelId}, skipping channel`);
+                        videos = []; // Don't create mock videos that pollute the analysis
                     }
 
                     let channelProcessed = 0;
@@ -843,8 +832,14 @@ class SimpleJobQueue {
         // Step 4: Return top keywords (limit for cost efficiency)
         const topKeywords = rankedKeywords.slice(0, 30); // Limit to 30 most important keywords
 
-        console.log(`Keyword extraction: ${transcript.length} segments -> ${topKeywords.length} keywords`);
-        return topKeywords;
+        // Step 5: Final cleanup - remove any remaining problematic keywords
+        const cleanedKeywords = topKeywords.filter(keyword => {
+            const problematicKeywords = ['sample', 'transcript', 'ai', 'analysis', 'mock', 'test', 'normally', 'contain', 'actual'];
+            return !problematicKeywords.some(prob => keyword.toLowerCase().includes(prob));
+        });
+
+        console.log(`Keyword extraction: ${transcript.length} segments -> ${cleanedKeywords.length} keywords`);
+        return cleanedKeywords;
     }
 
     /**
@@ -878,7 +873,10 @@ class SimpleJobQueue {
             'up', 'down', 'out', 'off', 'over', 'under', 'again', 'further', 'then', 'once',
             'here', 'there', 'when', 'where', 'why', 'how', 'all', 'any', 'both', 'each',
             'few', 'more', 'most', 'other', 'some', 'such', 'no', 'nor', 'not', 'only',
-            'own', 'same', 'so', 'than', 'too', 'very', 'just', 'now'
+            'own', 'same', 'so', 'than', 'too', 'very', 'just', 'now',
+            // Remove problematic mock/fallback keywords
+            'sample', 'transcript', 'analysis', 'ai', 'normally', 'contain', 'actual', 'video',
+            'mock', 'test', 'would', 'sample transcript', 'ai analysis', 'video transcript'
         ]);
 
         // Extract single words (nouns, verbs, adjectives)
@@ -896,8 +894,12 @@ class SimpleJobQueue {
         // Extract 2-word phrases (bigrams)
         for (let i = 0; i < words.length - 1; i++) {
             const phrase = `${words[i]} ${words[i + 1]}`;
+            // Skip problematic mock phrases
+            const mockPhrases = ['sample transcript', 'ai analysis', 'video transcript', 'normally contain', 'actual video', 'sample content', 'mock video', 'recent mock'];
+            const isMockPhrase = mockPhrases.some(mock => phrase.includes(mock));
+
             if (!stopWords.has(words[i]) && !stopWords.has(words[i + 1]) &&
-                phrase.length >= 6 && phrase.length <= 25) {
+                phrase.length >= 6 && phrase.length <= 25 && !isMockPhrase) {
                 if (this.isTechnicalOrEducationalPhrase(phrase)) {
                     keywords.add(phrase + '_priority');
                 }
@@ -928,7 +930,7 @@ class SimpleJobQueue {
             'protocol', 'security', 'authentication', 'authorization', 'encryption',
             'performance', 'optimization', 'testing', 'debugging', 'deployment',
             'architecture', 'design', 'pattern', 'principle', 'concept', 'theory',
-            'analysis', 'implementation', 'solution', 'problem', 'approach', 'strategy',
+            'implementation', 'solution', 'problem', 'approach', 'strategy',
             'tutorial', 'guide', 'example', 'demo', 'explanation', 'introduction',
             'advanced', 'beginner', 'intermediate', 'professional', 'best', 'practice'
         ];
@@ -1005,10 +1007,10 @@ class SimpleJobQueue {
                 transcript = [];
             }
 
-            // Create mock transcript if none available
+            // Create fallback transcript if none available
             if (transcript.length === 0) {
                 transcript = [{
-                    text: `Sample content for ${video.title}. This video discusses topics related to the title.`,
+                    text: `${video.title}. ${video.description ? video.description.substring(0, 150) : 'Content from ' + video.channelTitle}`,
                     start: 0,
                     duration: 10
                 }];
@@ -1136,11 +1138,11 @@ Respond with JSON only - an array of objects:
      */
     async fallbackRelevanceAnalysis(videosWithKeywords, userInterests) {
         console.log('🔄 Using fallback relevance analysis (keyword-based)');
-        
+
         const results = videosWithKeywords.map(video => {
             const score = this.calculateKeywordRelevanceScore(video, userInterests);
             const isRelevant = score >= 0.5; // Lower threshold for fallback method
-            
+
             return {
                 video,
                 relevanceScore: score,
@@ -1153,7 +1155,7 @@ Respond with JSON only - an array of objects:
 
         const relevantCount = results.filter(r => r.isRelevant).length;
         console.log(`📈 Fallback Results: ${relevantCount}/${results.length} videos marked as relevant`);
-        
+
         return results;
     }
 
@@ -1165,34 +1167,34 @@ Respond with JSON only - an array of objects:
         const title = video.title.toLowerCase();
         const keywords = video.keywords.map(k => k.toLowerCase());
         const channelTitle = video.channelTitle.toLowerCase();
-        
+
         // Get user interest keywords
         const userKeywords = this.extractUserKeywords(userInterests);
-        
+
         // Title matching (highest weight)
         for (const userKeyword of userKeywords) {
             if (title.includes(userKeyword.toLowerCase())) {
                 score += 0.3;
             }
         }
-        
+
         // Keyword matching (medium weight)
         for (const userKeyword of userKeywords) {
             for (const videoKeyword of keywords) {
-                if (videoKeyword.includes(userKeyword.toLowerCase()) || 
+                if (videoKeyword.includes(userKeyword.toLowerCase()) ||
                     userKeyword.toLowerCase().includes(videoKeyword)) {
                     score += 0.2;
                 }
             }
         }
-        
+
         // Channel matching (lower weight)
         for (const userKeyword of userKeywords) {
             if (channelTitle.includes(userKeyword.toLowerCase())) {
                 score += 0.1;
             }
         }
-        
+
         // Quality indicators
         const qualityKeywords = ['tutorial', 'guide', 'how to', 'explained', 'course', 'learn'];
         for (const quality of qualityKeywords) {
@@ -1201,7 +1203,7 @@ Respond with JSON only - an array of objects:
                 break;
             }
         }
-        
+
         // Penalize clickbait
         const clickbaitWords = ['shocking', 'insane', 'crazy', 'you won\'t believe', 'clickbait'];
         for (const clickbait of clickbaitWords) {
@@ -1210,7 +1212,7 @@ Respond with JSON only - an array of objects:
                 break;
             }
         }
-        
+
         // Cap the score at 1.0
         return Math.min(score, 1.0);
     }
@@ -1220,20 +1222,20 @@ Respond with JSON only - an array of objects:
      */
     extractUserKeywords(userInterests) {
         const keywords = [];
-        
+
         if (!userInterests || typeof userInterests !== 'object') {
             return ['programming', 'technology', 'software', 'development'];
         }
-        
+
         for (const [category, data] of Object.entries(userInterests)) {
             // Add category name
             keywords.push(category);
-            
+
             // Add keywords if they exist
             if (data.keywords && Array.isArray(data.keywords)) {
                 keywords.push(...data.keywords);
             }
-            
+
             // Add subcategory names and keywords
             if (data.subcategories) {
                 for (const [subcat, subdata] of Object.entries(data.subcategories)) {
@@ -1244,7 +1246,7 @@ Respond with JSON only - an array of objects:
                 }
             }
         }
-        
+
         return [...new Set(keywords)]; // Remove duplicates
     }
 
@@ -1254,7 +1256,7 @@ Respond with JSON only - an array of objects:
     extractTopicsFromVideo(video) {
         const topics = [];
         const title = video.title.toLowerCase();
-        
+
         // Common tech topics
         const topicMap = {
             'ai': ['artificial intelligence', 'machine learning', 'ai', 'ml', 'neural'],
@@ -1265,7 +1267,7 @@ Respond with JSON only - an array of objects:
             'devops': ['devops', 'docker', 'kubernetes', 'deployment', 'cloud'],
             'tutorial': ['tutorial', 'guide', 'how to', 'course', 'learn']
         };
-        
+
         for (const [topic, keywords] of Object.entries(topicMap)) {
             for (const keyword of keywords) {
                 if (title.includes(keyword)) {
@@ -1274,7 +1276,7 @@ Respond with JSON only - an array of objects:
                 }
             }
         }
-        
+
         return topics.length > 0 ? topics : ['general'];
     }
 
@@ -1442,22 +1444,26 @@ Respond with JSON only - an array of objects:
                 return { success: false, reason: 'No YouTube sources found' };
             }
 
-            // Get start and end of today in UTC
+            // Get start and end of today in UTC (more precise handling)
             const today = new Date();
-            const startOfToday = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-            const endOfToday = new Date(startOfToday.getTime() + 24 * 60 * 60 * 1000);
 
-            console.log(`Looking for content published between ${startOfToday.toISOString()} and ${endOfToday.toISOString()}`);
+            // Create today's boundaries in UTC
+            const startOfToday = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()));
+            const endOfToday = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate() + 1));
+
+            console.log(`Today's date range (UTC): ${startOfToday.toISOString()} to ${endOfToday.toISOString()}`);
+            console.log(`Current time: ${today.toISOString()}`);
 
             let todaysVideos = [];
             const channelResults = [];
+            let totalVideosChecked = 0;
 
             for (const source of user.youtubeSources) {
                 try {
                     let videos = [];
                     try {
-                        // Get recent videos from channel
-                        videos = await YouTubeService.getChannelVideos(source.channelId, 10);
+                        // Get only the most recent videos (reduce from 10 to 5 for today's filter)
+                        videos = await YouTubeService.getChannelVideos(source.channelId, 5);
                     } catch (error) {
                         console.log(`Failed to get videos from ${source.channelId}, skipping`);
                         continue;
@@ -1466,10 +1472,17 @@ Respond with JSON only - an array of objects:
                     // Filter for today's videos that haven't been processed
                     const newTodaysVideos = [];
                     for (const video of videos) {
+                        totalVideosChecked++;
                         const publishedDate = new Date(video.publishedAt);
+                        const daysAgo = this.getDaysAgo(publishedDate);
 
-                        // Check if video was published today
-                        if (publishedDate >= startOfToday && publishedDate < endOfToday) {
+                        // Debug: Log each video's publish date
+                        console.log(`Video: "${video.title}" - Published: ${publishedDate.toISOString()} (${daysAgo} days ago)`);
+
+                        // Stricter check: only process videos from last 24 hours
+                        const hoursAgo = (new Date() - publishedDate) / (1000 * 60 * 60);
+
+                        if (publishedDate >= startOfToday && publishedDate < endOfToday && hoursAgo <= 24) {
                             // Check if already processed
                             const existingContent = await Content.findOne({
                                 sourceId: video.id,
@@ -1480,10 +1493,14 @@ Respond with JSON only - an array of objects:
 
                             if (!existingContent) {
                                 newTodaysVideos.push(video);
-                                console.log(`Found new today's video: ${video.title}`);
+                                console.log(`✅ Found new today's video: ${video.title} (${hoursAgo.toFixed(1)} hours ago)`);
                             } else {
-                                console.log(`Today's video already processed: ${video.title}`);
+                                console.log(`⏭️  Today's video already processed: ${video.title}`);
                             }
+                        } else if (daysAgo === 0 && hoursAgo > 24) {
+                            console.log(`❌ Video from today but too old: ${video.title} (${hoursAgo.toFixed(1)} hours ago)`);
+                        } else {
+                            console.log(`❌ Video not from today: ${video.title} (${daysAgo} days ago)`);
                         }
                     }
 
@@ -1491,6 +1508,7 @@ Respond with JSON only - an array of objects:
                     channelResults.push({
                         channelId: source.channelId,
                         channelTitle: source.channelTitle,
+                        videosChecked: videos.length,
                         todaysVideosFound: newTodaysVideos.length
                     });
 
@@ -1505,16 +1523,17 @@ Respond with JSON only - an array of objects:
             }
 
             if (todaysVideos.length === 0) {
-                console.log('No new videos from today found to process');
+                console.log(`No new videos from today found to process (checked ${totalVideosChecked} total videos)`);
                 return {
                     success: true,
                     userId,
+                    totalVideosChecked,
                     totalVideosQueued: 0,
                     channelResults
                 };
             }
 
-            console.log(`Found ${todaysVideos.length} new videos from today across ${user.youtubeSources.length} channels`);
+            console.log(`Found ${todaysVideos.length} new videos from today across ${user.youtubeSources.length} channels (checked ${totalVideosChecked} total)`);
 
             // Process today's videos using existing batch analysis
             const videosWithKeywords = await this.extractKeywordsFromAllVideos(todaysVideos);
@@ -1553,6 +1572,14 @@ Respond with JSON only - an array of objects:
             console.error(`Error processing today's content for user ${userId}:`, error);
             throw error;
         }
+    }
+
+    // Helper function to calculate days ago
+    getDaysAgo(date) {
+        const now = new Date();
+        const diffTime = Math.abs(now - date);
+        const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+        return diffDays;
     }
 }
 
