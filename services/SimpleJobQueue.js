@@ -532,31 +532,41 @@ class SimpleJobQueue {
             for (const [channelId, channelData] of channelMap) {
                 try {
                     let videos = [];
+                    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+
                     try {
-                        videos = await YouTubeService.getChannelVideos(channelId, 3);
+                        // Use date filtering to get only recent videos (more efficient)
+                        videos = await YouTubeService.getChannelVideosAfter(channelId, sevenDaysAgo, 10);
                     } catch (error) {
-                        console.log(`Failed to get videos from ${channelId}, skipping channel`);
-                        videos = []; // Don't create mock videos that pollute the analysis
+                        console.log(`Date filtering failed for ${channelId}, using traditional method`);
+                        try {
+                            const allVideos = await YouTubeService.getChannelVideos(channelId, 3);
+                            videos = allVideos.filter(video => {
+                                const videoDate = new Date(video.publishedAt);
+                                return videoDate >= sevenDaysAgo;
+                            });
+                        } catch (fallbackError) {
+                            console.log(`Failed to get videos from ${channelId}, skipping channel`);
+                            videos = [];
+                        }
                     }
 
                     let channelProcessed = 0;
                     for (const video of videos) {
                         const videoDate = new Date(video.publishedAt);
-                        const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
 
-                        if (videoDate >= sevenDaysAgo) {
-                            const existingContent = await Content.findOne({
-                                sourceId: video.id,
-                                source: 'youtube',
-                                processed: true
-                            });
+                        // Videos are already filtered by date from the API, just check if processed
+                        const existingContent = await Content.findOne({
+                            sourceId: video.id,
+                            source: 'youtube',
+                            processed: true
+                        });
 
-                            if (!existingContent) {
-                                await this.queueVideoProcessing(video.id, video, channelData.users);
-                                channelProcessed++;
-                            } else {
-                                console.log(`Skipping already processed video: ${video.title}`);
-                            }
+                        if (!existingContent) {
+                            await this.queueVideoProcessing(video.id, video, channelData.users);
+                            channelProcessed++;
+                        } else {
+                            console.log(`Skipping already processed video: ${video.title}`);
                         }
                     }
 
@@ -1456,51 +1466,52 @@ Respond with JSON only - an array of objects:
 
             let todaysVideos = [];
             const channelResults = [];
-            let totalVideosChecked = 0;
-
-            for (const source of user.youtubeSources) {
+            let totalVideosChecked = 0; for (const source of user.youtubeSources) {
                 try {
                     let videos = [];
                     try {
-                        // Get only the most recent videos (reduce from 10 to 5 for today's filter)
-                        videos = await YouTubeService.getChannelVideos(source.channelId, 5);
+                        // Use efficient date-filtered API call instead of fetching all recent videos
+                        videos = await YouTubeService.getChannelVideosAfter(source.channelId, startOfToday, 10);
                     } catch (error) {
-                        console.log(`Failed to get videos from ${source.channelId}, skipping`);
-                        continue;
+                        console.log(`Failed to get today's videos from ${source.channelId}: ${error.message}`);
+                        console.log(`Falling back to manual filtering for channel ${source.channelId}`);
+
+                        // Fallback to old method if date filtering fails
+                        try {
+                            const allVideos = await YouTubeService.getChannelVideos(source.channelId, 5);
+                            videos = allVideos.filter(video => {
+                                const publishedDate = new Date(video.publishedAt);
+                                return publishedDate >= startOfToday && publishedDate < endOfToday;
+                            });
+                        } catch (fallbackError) {
+                            console.log(`Fallback also failed for ${source.channelId}, skipping`);
+                            continue;
+                        }
                     }
 
-                    // Filter for today's videos that haven't been processed
+                    // Filter out videos that have already been processed
                     const newTodaysVideos = [];
                     for (const video of videos) {
                         totalVideosChecked++;
                         const publishedDate = new Date(video.publishedAt);
                         const daysAgo = this.getDaysAgo(publishedDate);
-
-                        // Debug: Log each video's publish date
-                        console.log(`Video: "${video.title}" - Published: ${publishedDate.toISOString()} (${daysAgo} days ago)`);
-
-                        // Stricter check: only process videos from last 24 hours
                         const hoursAgo = (new Date() - publishedDate) / (1000 * 60 * 60);
 
-                        if (publishedDate >= startOfToday && publishedDate < endOfToday && hoursAgo <= 24) {
-                            // Check if already processed
-                            const existingContent = await Content.findOne({
-                                sourceId: video.id,
-                                source: 'youtube',
-                                processed: true,
-                                processedAt: { $exists: true }
-                            });
+                        console.log(`Video: "${video.title}" - Published: ${publishedDate.toISOString()} (${hoursAgo.toFixed(1)} hours ago)`);
 
-                            if (!existingContent) {
-                                newTodaysVideos.push(video);
-                                console.log(`✅ Found new today's video: ${video.title} (${hoursAgo.toFixed(1)} hours ago)`);
-                            } else {
-                                console.log(`⏭️  Today's video already processed: ${video.title}`);
-                            }
-                        } else if (daysAgo === 0 && hoursAgo > 24) {
-                            console.log(`❌ Video from today but too old: ${video.title} (${hoursAgo.toFixed(1)} hours ago)`);
+                        // Check if already processed (should be minimal since we're fetching only today's videos)
+                        const existingContent = await Content.findOne({
+                            sourceId: video.id,
+                            source: 'youtube',
+                            processed: true,
+                            processedAt: { $exists: true }
+                        });
+
+                        if (!existingContent) {
+                            newTodaysVideos.push(video);
+                            console.log(`✅ Found new today's video: ${video.title} (${hoursAgo.toFixed(1)} hours ago)`);
                         } else {
-                            console.log(`❌ Video not from today: ${video.title} (${daysAgo} days ago)`);
+                            console.log(`⏭️  Today's video already processed: ${video.title}`);
                         }
                     }
 
@@ -1508,7 +1519,8 @@ Respond with JSON only - an array of objects:
                     channelResults.push({
                         channelId: source.channelId,
                         channelTitle: source.channelTitle,
-                        videosChecked: videos.length,
+                        apiMethod: videos.length > 0 ? 'date-filtered' : 'none',
+                        videosFromAPI: videos.length,
                         todaysVideosFound: newTodaysVideos.length
                     });
 
