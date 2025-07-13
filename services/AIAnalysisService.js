@@ -279,6 +279,7 @@ class AIAnalysisService {
 
     async performQuickOpenAIAnalysis(batch, userInterests) {
         const interestsText = this.formatUserInterests(userInterests);
+        console.log(`[DEBUG] Quick AI Analysis - Formatted user interests (including subcategories):`, interestsText.substring(0, 200) + (interestsText.length > 200 ? '...' : ''));
 
         const prompt = `Analyze the following YouTube content items for relevance to user interests: ${interestsText}
 
@@ -326,6 +327,7 @@ Respond with only a JSON array of scores (no examples): [score1, score2, score3,
 
     async performFullOpenAIAnalysis(content, userInterests) {
         const interestsText = this.formatUserInterests(userInterests);
+        console.log(`[DEBUG] Full AI Analysis - Formatted user interests (including subcategories):`, interestsText.substring(0, 200) + (interestsText.length > 200 ? '...' : ''));
 
         const prompt = `Provide a detailed analysis of this YouTube content for a user interested in: ${interestsText}
 
@@ -367,6 +369,9 @@ Provide analysis in JSON format:
      * Uses only title and keywords to minimize token usage and cost
      */
     async analyzeVideoRelevance(videoContent, userInterests) {
+        // Debug: Log the raw user interests structure
+        console.log(`[DEBUG] Raw user interests structure:`, JSON.stringify(userInterests, null, 2));
+
         const interestsText = this.formatUserInterests(userInterests);
 
         // Debug: Log what interests are being used
@@ -382,21 +387,26 @@ Keywords: ${videoContent.keywords.slice(0, 15).join(', ')}
 
 Rate this video's relevance from 0.0 to 1.0 based on how well it matches the user's specific interests.
 
+IMPORTANT MATCHING RULES:
+1. If the video title/keywords contain ANY of the user's specific interest keywords (like "AI", "LLM", "programming", etc.), it should score 0.7+ unless it's clearly entertainment-only content.
+2. Pay special attention to technical terms and acronyms that match the user's interests.
+3. Consider both main categories AND subcategories in the user interests.
+
 SCORING GUIDE:
 - 0.0-0.3: Completely irrelevant (entertainment, vlogs, unrelated topics)
 - 0.4-0.6: Somewhat related but not directly useful
-- 0.7-0.8: Good match with user interests
+- 0.7-0.8: Good match with user interests (contains relevant keywords/topics)
 - 0.9-1.0: Perfect match, highly valuable content
 
-Be realistic and vary your scores. Most content should score between 0.1-0.4 unless it's genuinely relevant.
+Be realistic but recognize when content directly matches user's stated interests.
 
-Example: A Google Flights tutorial would only be relevant for someone interested in travel/productivity, not for someone interested in programming.
+Example: If a user is interested in "AI, LLM" and the video is about "AI Super Agent", this should score 0.7+ as it directly matches their interests.
 
 Return JSON:
 {
   "relevanceScore": [actual_score_between_0_and_1],
   "isRelevant": [true_if_score_above_0.7],
-  "reasoning": "Explain why this score was given",
+  "reasoning": "Explain why this score was given, specifically mentioning any keyword matches",
   "keyTopics": ["main", "topics"]
 }`;
 
@@ -541,6 +551,7 @@ Respond with JSON only:
         const text = (content.title + ' ' + content.description).toLowerCase();
         let totalScore = 0;
         let matchCount = 0;
+        let subcategoryCount = 0;
 
         const interests = Array.isArray(userInterests) ? userInterests : Object.keys(userInterests || {});
 
@@ -563,21 +574,29 @@ Respond with JSON only:
             }
 
             if (interestData.subcategories) {
+                const subcatKeys = Object.keys(interestData.subcategories);
+                subcategoryCount += subcatKeys.length;
+                console.log(`[DEBUG] Processing ${subcatKeys.length} subcategories for "${interest}": ${subcatKeys.join(', ')}`);
+
                 for (const [subcat, subcatData] of Object.entries(interestData.subcategories)) {
                     if (text.includes(subcat.toLowerCase())) {
                         totalScore += (subcatData.priority || 5) * 0.08;
                         matchCount++;
+                        console.log(`[DEBUG] Subcategory match: "${subcat}" in "${text.substring(0, 100)}..."`);
                     }
 
                     for (const keyword of subcatData.keywords || []) {
                         if (text.includes(keyword.toLowerCase())) {
                             totalScore += (subcatData.priority || 5) * 0.03;
                             matchCount++;
+                            console.log(`[DEBUG] Subcategory keyword match: "${keyword}" in "${text.substring(0, 100)}..."`);
                         }
                     }
                 }
             }
         }
+
+        console.log(`[DEBUG] Keyword relevance calculation: ${subcategoryCount} subcategories processed, ${matchCount} matches, score: ${totalScore}`);
 
         return matchCount >= this.config.keywordMatchThreshold ? Math.min(totalScore, 1.0) : 0;
     }
@@ -648,8 +667,33 @@ Respond with JSON only:
             return Object.keys(userInterests).map(interest => {
                 const data = userInterests[interest];
                 const priority = data?.priority || 5;
-                return `${interest} (priority: ${priority})`;
-            }).join(', ');
+                let interestText = `${interest} (priority: ${priority})`;
+
+                // Include subcategories and their keywords
+                if (data.subcategories && Object.keys(data.subcategories).length > 0) {
+                    const subcategoryTexts = Object.keys(data.subcategories).map(subcat => {
+                        const subcatData = data.subcategories[subcat];
+                        const subcatPriority = subcatData?.priority || 5;
+                        let subcatText = `${subcat} (priority: ${subcatPriority})`;
+
+                        // Include keywords for this subcategory
+                        if (subcatData.keywords && subcatData.keywords.length > 0) {
+                            subcatText += ` [keywords: ${subcatData.keywords.join(', ')}]`;
+                        }
+
+                        return subcatText;
+                    });
+
+                    interestText += ` → subcategories: ${subcategoryTexts.join('; ')}`;
+                }
+
+                // Include main category keywords
+                if (data.keywords && data.keywords.length > 0) {
+                    interestText += ` [main keywords: ${data.keywords.join(', ')}]`;
+                }
+
+                return interestText;
+            }).join(' | ');
         }
 
         return 'general technology and learning';

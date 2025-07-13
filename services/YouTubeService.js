@@ -236,6 +236,49 @@ class YouTubeService {
     }
 
     /**
+     * Get channel videos published after a specific date (more efficient for today's content)
+     */
+    async getChannelVideosAfter(channelId, publishedAfter, maxResults = 10) {
+        try {
+            console.log(`Fetching videos from ${channelId} published after ${publishedAfter.toISOString()}`);
+
+            // Use search API with date filter for efficiency
+            const searchResponse = await this.youtube.search.list({
+                part: 'snippet',
+                channelId: channelId,
+                type: 'video',
+                order: 'date',
+                publishedAfter: publishedAfter.toISOString(),
+                maxResults: maxResults
+            });
+
+            const videos = [];
+            for (const item of searchResponse.data.items) {
+                const videoId = item.id.videoId;
+
+                // Get additional video details
+                const videoDetails = await this.getVideoDetails(videoId);
+                videos.push({
+                    id: videoId,
+                    title: item.snippet.title,
+                    description: item.snippet.description,
+                    publishedAt: item.snippet.publishedAt,
+                    thumbnails: item.snippet.thumbnails,
+                    channelId: item.snippet.channelId,
+                    channelTitle: item.snippet.channelTitle,
+                    ...videoDetails
+                });
+            }
+
+            console.log(`Found ${videos.length} videos from ${channelId} published after ${publishedAfter.toISOString()}`);
+            return videos;
+        } catch (error) {
+            console.error(`Error fetching channel videos after date for ${channelId}:`, error.message);
+            throw error;
+        }
+    }
+
+    /**
      * Get detailed video information
      */
     async getVideoDetails(videoId) {
