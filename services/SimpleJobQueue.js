@@ -1,20 +1,23 @@
-// Simple in-memory job queue for development/testing without Redis
+/**
+ * Refactored SimpleJobQueue - Job orchestration only
+ * Delegates analysis to the ai-analysis system
+ */
+
 const YouTubeService = require('./YouTubeService');
 const AIAnalysisService = require('./AIAnalysisServiceRefactored');
 const User = require('../models/User');
 const Content = require('../models/Content');
 const UserContent = require('../models/UserContent');
 
-class SimpleJobQueue {
+class SimpleJobQueueRefactored {
     constructor() {
         this.jobs = new Map();
         this.activeJobs = new Map();
         this.jobId = 0;
         this.isProcessing = false;
-        this.useAI = true; // Always use AI with OpenRouter
         this.setupProcessor();
 
-        console.log('🔄 Running with OpenRouter AI analysis mode');
+        console.log('🔄 SimpleJobQueue initialized with refactored AI analysis');
     }
 
     setupProcessor() {
@@ -50,6 +53,9 @@ class SimpleJobQueue {
                 case 'process-todays-content':
                     await this.processTodaysContentOnly(job.data.userId);
                     break;
+                case 'AI_ANALYSIS':
+                    await this.processAIAnalysisJob(job.data);
+                    break;
             }
 
             this.activeJobs.delete(jobId);
@@ -61,6 +67,23 @@ class SimpleJobQueue {
         }
 
         this.isProcessing = false;
+    }
+
+    /**
+     * Process AI Analysis job using refactored AI system
+     */
+    async processAIAnalysisJob(data) {
+        const { videos, userInterests } = data;
+
+        console.log(`🤖 Processing AI analysis for ${videos.length} videos`);
+
+        // Use the refactored AI analysis system
+        const result = await AIAnalysisService.analyzeContent(videos, userInterests);
+
+        console.log(`✅ AI analysis complete: ${result.analyzedContent.length} relevant videos found`);
+        console.log(`💰 Total cost: $${result.cost.total.toFixed(6)}`);
+
+        return result;
     }
 
     async processVideo(videoId, videoData, userIds = []) {
@@ -93,11 +116,10 @@ class SimpleJobQueue {
             });
 
             if (!content) {
-                // Try to get transcript (may fail for some videos)
+                // Get transcript
                 let transcript = [];
                 try {
                     transcript = await YouTubeService.getVideoTranscript(videoId);
-                    // Ensure transcript is always an array
                     if (!transcript || !Array.isArray(transcript)) {
                         transcript = [];
                     }
@@ -107,173 +129,90 @@ class SimpleJobQueue {
                 }
 
                 if (transcript.length === 0) {
-                    // No transcript available - use title and description only
+                    // Create fallback transcript
                     transcript = [{
                         text: `${videoData.title}. ${videoData.description ? videoData.description.substring(0, 200) : ''}`,
                         start: 0,
                         duration: 10
                     }];
-                }                // Step 1: List and display video information
-                console.log(`\n=== VIDEO ANALYSIS START ===`);
-                console.log(`Title: ${videoData.title}`);
-                console.log(`Channel: ${videoData.channelTitle}`);
-                console.log(`Duration: ${videoData.duration}`);
-                console.log(`Published: ${videoData.publishedAt}`);
-                console.log(`Views: ${videoData.viewCount || 0}`);
+                }
 
-                // Step 2: Extract keywords from transcript (free method, very low token usage)
-                const extractedKeywords = this.extractKeywordsFromTranscript(transcript);
-                console.log(`Transcript processed: ${transcript.length} segments -> ${extractedKeywords.length} keywords`);
-                console.log(`Keywords: ${extractedKeywords.slice(0, 10).join(', ')}${extractedKeywords.length > 10 ? '...' : ''}`);
+                // Prepare video for AI analysis
+                const videoForAnalysis = {
+                    id: videoId,
+                    title: videoData.title,
+                    description: videoData.description || '',
+                    channelTitle: videoData.channelTitle,
+                    duration: videoData.duration,
+                    viewCount: videoData.viewCount || 0,
+                    publishedAt: videoData.publishedAt,
+                    transcript: transcript.map(t => t.text).join(' ')
+                };
 
-                // Step 3: Get user interests for relevance analysis
+                // Get user interests for analysis
                 const users = await User.find({
                     'youtubeSources.channelId': videoData.channelId
                 });
                 const aggregatedInterests = this.aggregateUserInterests(users);
 
-                // Step 4: Use OpenRouter to analyze video relevance with keywords only
+                // Use refactored AI analysis system
+                console.log(`🤖 Starting AI analysis for video: ${videoId}`);
+                const analysisResult = await AIAnalysisService.analyzeContent([videoForAnalysis], aggregatedInterests);
+
                 let analysis;
-                try {
-                    console.log(`Starting OpenRouter relevance analysis for video: ${videoId}`);
-
-                    const relevanceAnalysis = await AIAnalysisService.analyzeVideoRelevance({
-                        id: videoId,
-                        title: videoData.title,
-                        keywords: extractedKeywords,
-                        duration: videoData.duration,
-                        viewCount: videoData.viewCount || 0,
-                        channelTitle: videoData.channelTitle,
-                        publishedAt: videoData.publishedAt
-                    }, aggregatedInterests);
-
-                    console.log(`Relevance Analysis completed - Score: ${relevanceAnalysis.relevanceScore} - Cost: $${relevanceAnalysis.cost.toFixed(4)}`);
-
-                    // Step 5: If relevant, perform detailed analysis
-                    if (relevanceAnalysis.isRelevant) {
-                        console.log(`Video is relevant, performing detailed analysis...`);
-
-                        const detailedAnalysis = await AIAnalysisService.performDetailedAnalysis({
-                            id: videoId,
-                            title: videoData.title,
-                            keywords: extractedKeywords,
-                            channelTitle: videoData.channelTitle
-                        }, aggregatedInterests);
-
-                        analysis = {
-                            segments: transcript.map(t => ({
-                                ...t,
-                                relevanceScore: relevanceAnalysis.relevanceScore,
-                                topics: detailedAnalysis.topics || ['general']
-                            })),
-                            analysis: {
-                                summary: detailedAnalysis.summary || `Analysis of ${videoData.title}`,
-                                sentiment: detailedAnalysis.sentiment || 'neutral',
-                                keyPoints: detailedAnalysis.keyPoints || [],
-                                relevanceScore: relevanceAnalysis.relevanceScore,
-                                processingCost: relevanceAnalysis.cost + (detailedAnalysis.cost || 0),
-                                processingStage: 'detailed_analysis',
-                                extractedKeywords: extractedKeywords
-                            },
-                            highlights: detailedAnalysis.highlights || transcript.slice(0, 2).map(t => ({
-                                ...t,
-                                reason: 'High relevance to user interests',
-                                relevance: relevanceAnalysis.relevanceScore
-                            })),
-                            topics: detailedAnalysis.topics || ['general'],
-                            categories: detailedAnalysis.categories || ['General'],
-                            costEffectiveAnalysis: {
-                                totalCost: relevanceAnalysis.cost + (detailedAnalysis.cost || 0),
-                                stagesCompleted: 2,
-                                aiProcessed: true,
-                                relevanceScore: relevanceAnalysis.relevanceScore,
-                                isRelevant: true,
-                                keywordCount: extractedKeywords.length
-                            }
-                        };
-                    } else {
-                        // Content not relevant - skip detailed analysis
-                        console.log(`Video not relevant (score: ${relevanceAnalysis.relevanceScore}), skipping detailed analysis`);
-                        analysis = {
-                            segments: [],
-                            analysis: {
-                                summary: 'Video filtered out due to low relevance',
-                                sentiment: 'neutral',
-                                keyPoints: ['Video did not meet relevance threshold'],
-                                relevanceScore: relevanceAnalysis.relevanceScore,
-                                processingCost: relevanceAnalysis.cost,
-                                processingStage: 'relevance_filtered',
-                                extractedKeywords: extractedKeywords
-                            },
-                            highlights: [],
-                            topics: [],
-                            categories: [],
-                            costEffectiveAnalysis: {
-                                totalCost: relevanceAnalysis.cost,
-                                stagesCompleted: 1,
-                                aiProcessed: false,
-                                relevanceScore: relevanceAnalysis.relevanceScore,
-                                isRelevant: false,
-                                filtered: true,
-                                keywordCount: extractedKeywords.length
-                            }
-                        };
-                    }
-                } catch (error) {
-                    console.log(`AI analysis failed for video: ${videoId} - ${error.message}`);
-                    // Create fallback analysis for testing
-                    const extractedKeywords = this.extractKeywordsFromTranscript(transcript);
+                if (analysisResult.analyzedContent.length > 0) {
+                    const analyzedVideo = analysisResult.analyzedContent[0];
                     analysis = {
                         segments: transcript.map(t => ({
                             ...t,
-                            relevanceScore: 0.5,
-                            topics: ['general']
+                            relevanceScore: analyzedVideo.finalRelevanceScore || 0.5,
+                            topics: analyzedVideo.categories || ['general']
                         })),
                         analysis: {
-                            summary: `Fallback analysis of ${videoData.title}`,
-                            sentiment: 'neutral',
-                            keyPoints: ['Analysis failed, using fallback'],
-                            relevanceScore: 0.5,
-                            processingCost: 0,
-                            processingStage: 'fallback',
-                            extractedKeywords: extractedKeywords
+                            summary: analyzedVideo.fullAnalysis?.summary || `Analysis of ${videoData.title}`,
+                            sentiment: analyzedVideo.fullAnalysis?.sentiment || 'neutral',
+                            keyPoints: analyzedVideo.fullAnalysis?.keyPoints || [],
+                            relevanceScore: analyzedVideo.finalRelevanceScore || 0.5,
+                            processingCost: analysisResult.cost.total,
+                            processingStage: analyzedVideo.processingStage || 'ai_analysis'
                         },
-                        highlights: transcript.slice(0, 2).map(t => ({
+                        highlights: analyzedVideo.highlights || transcript.slice(0, 2).map(t => ({
                             ...t,
-                            reason: 'Fallback highlight'
+                            reason: 'AI-identified relevance',
+                            relevance: analyzedVideo.finalRelevanceScore || 0.5
                         })),
-                        topics: ['general'],
-                        categories: ['General']
+                        topics: analyzedVideo.categories || ['general'],
+                        categories: analyzedVideo.categories || ['General']
                     };
+                } else {
+                    // Video not relevant
+                    console.log(`Video not relevant: ${videoId}`);
+                    return { success: true, reason: 'Video not relevant' };
                 }
-
-                console.log(`=== VIDEO ANALYSIS COMPLETE ===\n`);
 
                 // Create content record
                 content = new Content({
                     title: videoData.title,
                     description: videoData.description || '',
                     url: `https://www.youtube.com/watch?v=${videoId}`,
-                    source: 'youtube', // Required field
-                    sourceId: videoId, // YouTube video ID
+                    source: 'youtube',
+                    sourceId: videoId,
                     sourceChannel: {
                         id: videoData.channelId,
                         name: videoData.channelTitle
                     },
                     thumbnail: videoData.thumbnails?.medium?.url || videoData.thumbnails?.default?.url,
                     publishedAt: new Date(videoData.publishedAt),
-                    duration: this.parseDuration(videoData.duration), // Convert to seconds
+                    duration: this.parseDuration(videoData.duration),
                     transcript: {
-                        text: transcript.map(t => t.text).join(' '), // Use full transcript for storage
+                        text: transcript.map(t => t.text).join(' '),
                         segments: transcript.map(t => ({
                             start: t.start || 0,
                             end: t.end || (t.start || 0) + (t.duration || 0),
                             text: t.text,
                             topics: t.topics || [],
                             relevanceScore: t.relevanceScore || 0
-                        })),
-                        // Store extracted keywords for analysis
-                        extractedKeywords: this.extractKeywordsFromTranscript(transcript)
+                        }))
                     },
                     analysis: {
                         mainTopics: analysis.topics || [],
@@ -293,9 +232,7 @@ class SimpleJobQueue {
                 console.log(`Content created for video: ${videoId}`);
             }
 
-            // Create personalized content for specified users
-            // NOTE: At this point, relevance has already been calculated in batch processing
-            // Only videos that passed the relevance filter should reach this point
+            // Create UserContent entries for relevant users
             let targetUsers = userIds;
             if (!targetUsers || targetUsers.length === 0) {
                 const users = await User.find({
@@ -309,7 +246,7 @@ class SimpleJobQueue {
                 return { success: true, reason: 'No target users' };
             }
 
-            // Create UserContent entries with relevance scoring
+            // Create UserContent entries
             const userContentPromises = targetUsers.map(async (userId) => {
                 const existingUserContent = await UserContent.findOne({
                     userId,
@@ -323,18 +260,13 @@ class SimpleJobQueue {
                 const user = await User.findById(userId);
                 if (!user) return null;
 
-                // Use relevance score from content analysis (already calculated in batch)
-                // If this video reached processVideo, it means it passed relevance filtering
                 const relevanceScore = content.analysis?.overallRelevanceScore
-                    ? content.analysis.overallRelevanceScore / 100  // Convert back to 0-1 scale
-                    : 0.8; // Default high score for videos that passed batch filtering
+                    ? content.analysis.overallRelevanceScore / 100
+                    : 0.8;
 
                 const threshold = parseFloat(process.env.RELEVANCE_THRESHOLD) || 0.6;
                 if (relevanceScore >= threshold) {
-                    // Calculate matched interests between user and content
                     const matchedInterests = this.calculateMatchedInterests(user.interests, content);
-
-                    // Generate personalized highlights based on user interests
                     const personalizedHighlights = this.generatePersonalizedHighlights(content, user.interests);
 
                     const userContent = new UserContent({
@@ -378,7 +310,7 @@ class SimpleJobQueue {
                 return { success: false, reason: 'No YouTube sources found' };
             }
 
-            // Step 1: Collect all videos from all channels first
+            // Step 1: Collect all videos from all channels
             console.log('\n=== BATCH VIDEO COLLECTION ===');
             const allVideos = [];
             const channelResults = [];
@@ -387,21 +319,10 @@ class SimpleJobQueue {
                 try {
                     let videos = [];
                     try {
-                        videos = await YouTubeService.getChannelVideos(source.channelId, 5);
+                        videos = await YouTubeService.getChannelVideos(source.channelId, 10);
                     } catch (error) {
-                        console.log(`Failed to get videos from ${source.channelId}, creating mock data`);
-                        videos = [{
-                            id: `mock_${Date.now()}_${Math.random()}`,
-                            title: `Mock Video from ${source.channelTitle}`,
-                            description: 'Mock video description for testing',
-                            channelId: source.channelId,
-                            channelTitle: source.channelTitle,
-                            publishedAt: new Date().toISOString(),
-                            duration: 'PT10M30S',
-                            thumbnails: {
-                                default: { url: 'https://i.ytimg.com/vi/mock/default.jpg' }
-                            }
-                        }];
+                        console.log(`Error fetching videos from channel ${source.channelId}: ${error.message}`);
+                        videos = [];
                     }
 
                     // Filter out videos that already exist and have been processed
@@ -409,15 +330,11 @@ class SimpleJobQueue {
                     for (const video of videos) {
                         const existingContent = await Content.findOne({
                             sourceId: video.id,
-                            source: 'youtube',
-                            processed: true,
-                            processedAt: { $exists: true }
+                            source: 'youtube'
                         });
 
                         if (!existingContent) {
                             newVideos.push(video);
-                        } else {
-                            console.log(`Skipping already processed video: ${video.title}`);
                         }
                     }
 
@@ -450,48 +367,47 @@ class SimpleJobQueue {
 
             console.log(`Found ${allVideos.length} new videos across ${user.youtubeSources.length} channels`);
 
-            // Step 2: Extract keywords from all videos
-            console.log('\n=== BATCH KEYWORD EXTRACTION ===');
-            const videosWithKeywords = await this.extractKeywordsFromAllVideos(allVideos);
-
-            // Step 3: Get user interests for batch analysis
+            // Step 2: Use AI analysis system for batch processing
             const aggregatedInterests = this.aggregateUserInterests([user]);
 
-            // Step 4: Batch relevance analysis
-            console.log('\n=== BATCH RELEVANCE ANALYSIS ===');
-            const relevanceResults = await this.batchAnalyzeRelevance(videosWithKeywords, aggregatedInterests);
+            // Prepare videos for analysis
+            const videosForAnalysis = allVideos.map(video => ({
+                id: video.id,
+                title: video.title,
+                description: video.description || '',
+                channelTitle: video.channelTitle,
+                duration: video.duration,
+                viewCount: video.viewCount || 0,
+                publishedAt: video.publishedAt
+            }));
 
-            // Step 5: Process videos based on relevance results
+            console.log('\n=== BATCH AI ANALYSIS ===');
+            const analysisResult = await AIAnalysisService.analyzeContent(videosForAnalysis, aggregatedInterests);
+
+            // Step 3: Queue relevant videos for processing
             console.log('\n=== PROCESSING RELEVANT VIDEOS ===');
             let processedCount = 0;
 
-            for (const result of relevanceResults) {
-                if (result.isRelevant) {
-                    console.log(`✅ Processing relevant video: ${result.video.title}`);
-                    await this.queueVideoProcessing(result.video.id, result.video, [userId]);
+            for (const analyzedVideo of analysisResult.analyzedContent) {
+                const originalVideo = allVideos.find(v => v.id === analyzedVideo.id);
+                if (originalVideo) {
+                    console.log(`✅ Processing relevant video: ${originalVideo.title}`);
+                    await this.queueVideoProcessing(originalVideo.id, originalVideo, [userId]);
                     processedCount++;
-                } else {
-                    console.log(`❌ Skipping irrelevant video: ${result.video.title} (score: ${result.relevanceScore})`);
                 }
             }
 
             console.log(`\n=== BATCH PROCESSING COMPLETE ===`);
             console.log(`Total videos analyzed: ${allVideos.length}`);
             console.log(`Relevant videos queued: ${processedCount}`);
-            console.log(`Videos filtered out: ${allVideos.length - processedCount}`);
+            console.log(`Total cost: $${analysisResult.cost.total.toFixed(6)}`);
 
             return {
                 success: true,
                 userId,
                 totalVideosAnalyzed: allVideos.length,
                 totalVideosQueued: processedCount,
-                relevanceResults: relevanceResults.map(r => ({
-                    videoId: r.video.id,
-                    title: r.video.title,
-                    relevanceScore: r.relevanceScore,
-                    isRelevant: r.isRelevant,
-                    reasoning: r.reasoning
-                })),
+                analysisCost: analysisResult.cost.total,
                 channelResults
             };
 
@@ -501,107 +417,7 @@ class SimpleJobQueue {
         }
     }
 
-    async monitorAllChannels() {
-        try {
-            console.log('Starting channel monitoring for all users');
-
-            const users = await User.find({
-                'youtubeSources.0': { $exists: true }
-            });
-
-            const channelMap = new Map();
-
-            users.forEach(user => {
-                user.youtubeSources.forEach(source => {
-                    if (!channelMap.has(source.channelId)) {
-                        channelMap.set(source.channelId, {
-                            channelId: source.channelId,
-                            channelTitle: source.channelTitle,
-                            users: []
-                        });
-                    }
-                    channelMap.get(source.channelId).users.push(user._id.toString());
-                });
-            });
-
-            let totalProcessed = 0;
-            const results = [];
-
-            for (const [channelId, channelData] of channelMap) {
-                try {
-                    let videos = [];
-                    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-
-                    try {
-                        // Use date filtering to get only recent videos (more efficient)
-                        videos = await YouTubeService.getChannelVideosAfter(channelId, sevenDaysAgo, 10);
-                    } catch (error) {
-                        console.log(`Date filtering failed for ${channelId}, using traditional method`);
-                        try {
-                            const allVideos = await YouTubeService.getChannelVideos(channelId, 3);
-                            videos = allVideos.filter(video => {
-                                const videoDate = new Date(video.publishedAt);
-                                return videoDate >= sevenDaysAgo;
-                            });
-                        } catch (fallbackError) {
-                            console.log(`Failed to get videos from ${channelId}, skipping channel`);
-                            videos = [];
-                        }
-                    }
-
-                    let channelProcessed = 0;
-                    for (const video of videos) {
-                        const videoDate = new Date(video.publishedAt);
-
-                        // Videos are already filtered by date from the API, just check if processed
-                        const existingContent = await Content.findOne({
-                            sourceId: video.id,
-                            source: 'youtube',
-                            processed: true
-                        });
-
-                        if (!existingContent) {
-                            await this.queueVideoProcessing(video.id, video, channelData.users);
-                            channelProcessed++;
-                        } else {
-                            console.log(`Skipping already processed video: ${video.title}`);
-                        }
-                    }
-
-                    results.push({
-                        channelId,
-                        channelTitle: channelData.channelTitle,
-                        userCount: channelData.users.length,
-                        videosQueued: channelProcessed
-                    });
-
-                    totalProcessed += channelProcessed;
-
-                } catch (error) {
-                    console.error(`Error monitoring channel ${channelId}:`, error);
-                    results.push({
-                        channelId,
-                        error: error.message
-                    });
-                }
-            }
-
-            console.log(`Channel monitoring complete. Queued ${totalProcessed} videos from ${channelMap.size} channels`);
-
-            return {
-                success: true,
-                totalVideosQueued: totalProcessed,
-                channelsMonitored: channelMap.size,
-                results
-            };
-
-        } catch (error) {
-            console.error('Error in channel monitoring:', error);
-            throw error;
-        }
-    }
-
-    // Queue management methods
+    // ... (keep existing queue management methods)
     async queueVideoProcessing(videoId, videoData, userIds = []) {
         const jobId = ++this.jobId;
         const job = {
@@ -614,92 +430,9 @@ class SimpleJobQueue {
 
         this.jobs.set(jobId, job);
         console.log(`Queued video processing job ${jobId} for video ${videoId}`);
-
         return job;
     }
 
-    async queueChannelMonitoring() {
-        const jobId = ++this.jobId;
-        const job = {
-            id: jobId,
-            type: 'monitor-channels',
-            data: {},
-            createdAt: new Date()
-        };
-
-        this.jobs.set(jobId, job);
-        console.log(`Queued channel monitoring job ${jobId}`);
-        return jobId;
-    }
-
-    /**
-     * Queue user subscription processing
-     */
-    async queueUserSubscriptionProcessing(userId) {
-        const jobId = ++this.jobId;
-        const job = {
-            id: jobId,
-            type: 'process-user-subscriptions',
-            data: { userId },
-            createdAt: new Date(),
-            status: 'queued'
-        };
-
-        this.jobs.set(jobId, job);
-        console.log(`Queued user subscription processing job ${jobId} for user ${userId}`);
-
-        return jobId;
-    }
-
-    /**
-     * Queue today's content processing for a user
-     */
-    async queueTodaysContentProcessing(userId) {
-        const jobId = ++this.jobId;
-        const job = {
-            id: jobId,
-            type: 'process-todays-content',
-            data: { userId },
-            createdAt: new Date(),
-            status: 'queued'
-        };
-
-        this.jobs.set(jobId, job);
-        console.log(`Queued today's content processing job ${jobId} for user ${userId}`);
-
-        return jobId;
-    }
-
-    /**
-     * Get queue statistics
-     */
-    async getQueueStats() {
-        return {
-            queuedJobs: this.jobs.size,
-            activeJobs: this.activeJobs.size,
-            totalJobsProcessed: this.jobId - this.jobs.size - this.activeJobs.size,
-            isProcessing: this.isProcessing
-        };
-    }
-
-    /**
-     * Get active jobs
-     */
-    async getActiveJobs() {
-        const activeJobsArray = Array.from(this.activeJobs.values()).map(job => ({
-            id: job.id,
-            type: job.type,
-            status: 'processing',
-            createdAt: job.createdAt,
-            data: job.data
-        }));
-
-        return activeJobsArray;
-    }
-
-    /**
-     * Add job to queue (generic method)
-     */
     addJob(type, data) {
         const jobId = ++this.jobId;
         const job = {
@@ -712,85 +445,59 @@ class SimpleJobQueue {
 
         this.jobs.set(jobId, job);
         console.log(`Added job ${jobId} of type ${type} to queue`);
-
         return job;
     }
 
-    /**
-     * Cleanup method for graceful shutdown
-     */
-    async cleanup() {
-        console.log('SimpleJobQueue: Performing cleanup...');
-        this.isProcessing = false;
-        // Clear any active intervals or resources if needed
-        console.log('SimpleJobQueue: Cleanup complete');
+    // Missing methods that CronService expects
+    async queueChannelMonitoring() {
+        return this.addJob('monitor-channels', {});
     }
 
-    // Helper method to aggregate user interests for AI analysis
+    async queueUserSubscriptionProcessing(userId) {
+        return this.addJob('process-user-subscriptions', { userId });
+    }
+
+    async queueTodaysContentProcessing(userId) {
+        return this.addJob('process-todays-content', { userId });
+    }
+
+    async getQueueStats() {
+        return {
+            queuedJobs: this.jobs.size,
+            activeJobs: this.activeJobs.size,
+            totalJobsProcessed: this.jobId - this.jobs.size - this.activeJobs.size,
+            isProcessing: this.isProcessing
+        };
+    }
+
+    // Helper methods (keep minimal ones needed for job processing)
     aggregateUserInterests(users) {
         const aggregated = {};
 
-        // Handle null or empty users array
         if (!users || !Array.isArray(users) || users.length === 0) {
-            console.log('No users found for interest aggregation, using default interests');
             return {
-                'programming': {
-                    priority: 5,
-                    keywords: ['coding', 'development', 'software'],
-                    subcategories: {}
-                },
-                'technology': {
-                    priority: 5,
-                    keywords: ['tech', 'innovation'],
-                    subcategories: {}
-                }
+                'programming': { priority: 5, keywords: ['coding', 'development', 'software'] },
+                'technology': { priority: 5, keywords: ['tech', 'innovation'] }
             };
         }
 
         for (const user of users) {
             if (!user.interests) continue;
 
-            // Handle both array (legacy) and object (hierarchical) formats
             if (Array.isArray(user.interests)) {
-                // Legacy format - convert to simple object
                 for (const interest of user.interests) {
                     if (!aggregated[interest]) {
-                        aggregated[interest] = {
-                            priority: 5,
-                            keywords: [],
-                            subcategories: {}
-                        };
+                        aggregated[interest] = { priority: 5, keywords: [] };
                     }
                     aggregated[interest].priority = Math.max(aggregated[interest].priority, 5);
                 }
             } else if (typeof user.interests === 'object') {
-                // Hierarchical format - merge interests
                 for (const [category, data] of Object.entries(user.interests)) {
-                    if (!aggregated[category]) {
-                        aggregated[category] = {
-                            priority: data.priority || 5,
-                            keywords: [...(data.keywords || [])],
-                            subcategories: { ...(data.subcategories || {}) }
-                        };
-                    } else {
-                        // Merge with existing
-                        aggregated[category].priority = Math.max(
-                            aggregated[category].priority,
-                            data.priority || 5
-                        );
-
-                        // Merge keywords
-                        const existingKeywords = new Set(aggregated[category].keywords);
-                        for (const keyword of data.keywords || []) {
-                            existingKeywords.add(keyword);
-                        }
-                        aggregated[category].keywords = Array.from(existingKeywords);
-                        // Merge subcategories
-                        aggregated[category].subcategories = {
-                            ...aggregated[category].subcategories,
-                            ...(data.subcategories || {})
-                        };
-                    }
+                    aggregated[category] = {
+                        priority: Math.max(aggregated[category]?.priority || 0, data.priority || 5),
+                        keywords: [...(aggregated[category]?.keywords || []), ...(data.keywords || [])],
+                        subcategories: { ...(aggregated[category]?.subcategories || {}), ...(data.subcategories || {}) }
+                    };
                 }
             }
         }
@@ -798,800 +505,55 @@ class SimpleJobQueue {
         return aggregated;
     }
 
-    // Utility method to parse YouTube duration format (PT30M15S) to seconds
     parseDuration(duration) {
-        if (!duration || typeof duration !== 'string') {
-            return 0;
-        }
-
+        if (!duration || typeof duration !== 'string') return 0;
         const match = duration.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
-        if (!match) {
-            return 0;
-        }
-
+        if (!match) return 0;
         const hours = parseInt(match[1] || '0');
         const minutes = parseInt(match[2] || '0');
         const seconds = parseInt(match[3] || '0');
-
         return hours * 3600 + minutes * 60 + seconds;
     }
 
-    /**
-     * Extract keywords from transcript using free methods (no LLM)
-     * This method uses natural language processing techniques to extract relevant keywords
-     */
-    extractKeywordsFromTranscript(transcript) {
-        if (!transcript || !Array.isArray(transcript) || transcript.length === 0) {
-            return [];
-        }
-
-        // Combine all transcript text
-        const fullText = transcript.map(segment => segment.text).join(' ').toLowerCase();
-
-        // Step 1: Basic text cleaning
-        const cleanedText = this.cleanTextForKeywordExtraction(fullText);
-
-        // Step 2: Extract important words and phrases
-        const keywords = this.extractImportantKeywords(cleanedText);
-
-        // Step 3: Filter and rank keywords
-        const rankedKeywords = this.rankKeywordsByImportance(keywords);
-
-        // Step 4: Return top keywords (limit for cost efficiency)
-        const topKeywords = rankedKeywords.slice(0, 30); // Limit to 30 most important keywords
-
-        // Step 5: Final cleanup - remove any remaining problematic keywords
-        const cleanedKeywords = topKeywords.filter(keyword => {
-            const problematicKeywords = ['sample', 'transcript', 'ai', 'analysis', 'mock', 'test', 'normally', 'contain', 'actual'];
-            return !problematicKeywords.some(prob => keyword.toLowerCase().includes(prob));
-        });
-
-        console.log(`Keyword extraction: ${transcript.length} segments -> ${cleanedKeywords.length} keywords`);
-        return cleanedKeywords;
-    }
-
-    /**
-     * Clean text for keyword extraction
-     */
-    cleanTextForKeywordExtraction(text) {
-        return text
-            // Remove URLs, emails, and special characters
-            .replace(/https?:\/\/[^\s]+/g, '')
-            .replace(/\S+@\S+\.\S+/g, '')
-            .replace(/[^\w\s]/g, ' ')
-            // Normalize whitespace
-            .replace(/\s+/g, ' ')
-            .trim();
-    }
-
-    /**
-     * Extract important keywords using NLP techniques
-     */
-    extractImportantKeywords(text) {
-        const words = text.split(/\s+/);
-        const keywords = new Set();
-
-        // Common stop words to ignore
-        const stopWords = new Set([
-            'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by',
-            'this', 'that', 'these', 'those', 'i', 'you', 'he', 'she', 'it', 'we', 'they',
-            'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did',
-            'will', 'would', 'could', 'should', 'may', 'might', 'can', 'must',
-            'what', 'where', 'when', 'why', 'how', 'who', 'which',
-            'up', 'down', 'out', 'off', 'over', 'under', 'again', 'further', 'then', 'once',
-            'here', 'there', 'when', 'where', 'why', 'how', 'all', 'any', 'both', 'each',
-            'few', 'more', 'most', 'other', 'some', 'such', 'no', 'nor', 'not', 'only',
-            'own', 'same', 'so', 'than', 'too', 'very', 'just', 'now',
-            // Remove problematic mock/fallback keywords
-            'sample', 'transcript', 'analysis', 'ai', 'normally', 'contain', 'actual', 'video',
-            'mock', 'test', 'would', 'sample transcript', 'ai analysis', 'video transcript'
-        ]);
-
-        // Extract single words (nouns, verbs, adjectives)
-        for (let i = 0; i < words.length; i++) {
-            const word = words[i];
-            if (word.length >= 3 && !stopWords.has(word) && isNaN(word)) {
-                // Prioritize technical and educational terms
-                if (this.isTechnicalOrEducationalTerm(word)) {
-                    keywords.add(word + '_priority'); // Mark as priority
-                }
-                keywords.add(word);
-            }
-        }
-
-        // Extract 2-word phrases (bigrams)
-        for (let i = 0; i < words.length - 1; i++) {
-            const phrase = `${words[i]} ${words[i + 1]}`;
-            // Skip problematic mock phrases
-            const mockPhrases = ['sample transcript', 'ai analysis', 'video transcript', 'normally contain', 'actual video', 'sample content', 'mock video', 'recent mock'];
-            const isMockPhrase = mockPhrases.some(mock => phrase.includes(mock));
-
-            if (!stopWords.has(words[i]) && !stopWords.has(words[i + 1]) &&
-                phrase.length >= 6 && phrase.length <= 25 && !isMockPhrase) {
-                if (this.isTechnicalOrEducationalPhrase(phrase)) {
-                    keywords.add(phrase + '_priority');
-                }
-                keywords.add(phrase);
-            }
-        }
-
-        // Extract 3-word phrases (trigrams) for technical concepts
-        for (let i = 0; i < words.length - 2; i++) {
-            const phrase = `${words[i]} ${words[i + 1]} ${words[i + 2]}`;
-            if (this.isTechnicalOrEducationalPhrase(phrase) && phrase.length <= 30) {
-                keywords.add(phrase + '_priority');
-            }
-        }
-
-        return Array.from(keywords);
-    }
-
-    /**
-     * Check if a word is technical or educational
-     */
-    isTechnicalOrEducationalTerm(word) {
-        const technicalTerms = [
-            'function', 'variable', 'array', 'object', 'class', 'method', 'property',
-            'algorithm', 'data', 'structure', 'database', 'server', 'client', 'api',
-            'programming', 'coding', 'development', 'software', 'application', 'system',
-            'framework', 'library', 'package', 'module', 'component', 'interface',
-            'protocol', 'security', 'authentication', 'authorization', 'encryption',
-            'performance', 'optimization', 'testing', 'debugging', 'deployment',
-            'architecture', 'design', 'pattern', 'principle', 'concept', 'theory',
-            'implementation', 'solution', 'problem', 'approach', 'strategy',
-            'tutorial', 'guide', 'example', 'demo', 'explanation', 'introduction',
-            'advanced', 'beginner', 'intermediate', 'professional', 'best', 'practice'
-        ];
-        return technicalTerms.some(term => word.includes(term) || term.includes(word));
-    }
-
-    /**
-     * Check if a phrase is technical or educational
-     */
-    isTechnicalOrEducationalPhrase(phrase) {
-        const technicalPhrases = [
-            'machine learning', 'artificial intelligence', 'data science', 'web development',
-            'software engineering', 'computer science', 'programming language', 'database design',
-            'user interface', 'user experience', 'responsive design', 'version control',
-            'test driven', 'object oriented', 'functional programming', 'data structure',
-            'best practice', 'code review', 'software architecture', 'design pattern',
-            'how to', 'tutorial', 'step by', 'getting started', 'deep dive', 'case study',
-            'real world', 'practical example', 'hands on', 'comprehensive guide'
-        ];
-        return technicalPhrases.some(techPhrase =>
-            phrase.includes(techPhrase) || techPhrase.includes(phrase)
-        );
-    }
-
-    /**
-     * Rank keywords by importance
-     */
-    rankKeywordsByImportance(keywords) {
-        return keywords
-            .map(keyword => {
-                let score = 1;
-                const cleanKeyword = keyword.replace('_priority', '');
-
-                // Priority keywords get higher score
-                if (keyword.includes('_priority')) {
-                    score += 3;
-                }
-
-                // Longer phrases often more specific and valuable
-                if (cleanKeyword.split(' ').length > 1) {
-                    score += 1;
-                }
-
-                // Technical terms get bonus
-                if (this.isTechnicalOrEducationalTerm(cleanKeyword) ||
-                    this.isTechnicalOrEducationalPhrase(cleanKeyword)) {
-                    score += 2;
-                }
-
-                return { keyword: cleanKeyword, score };
-            })
-            .sort((a, b) => b.score - a.score)
-            .map(item => item.keyword);
-    }
-
-    /**
-     * Extract keywords from all videos in batch
-     */
-    async extractKeywordsFromAllVideos(videos) {
-        console.log(`Extracting keywords from ${videos.length} videos...`);
-
-        const videosWithKeywords = [];
-
-        for (const video of videos) {
-            // Get transcript for each video
-            let transcript = [];
-            try {
-                transcript = await YouTubeService.getVideoTranscript(video.id);
-                if (!transcript || !Array.isArray(transcript)) {
-                    transcript = [];
-                }
-            } catch (error) {
-                console.log(`No transcript for ${video.id}: ${error.message}`);
-                transcript = [];
-            }
-
-            // Create fallback transcript if none available
-            if (transcript.length === 0) {
-                transcript = [{
-                    text: `${video.title}. ${video.description ? video.description.substring(0, 150) : 'Content from ' + video.channelTitle}`,
-                    start: 0,
-                    duration: 10
-                }];
-            }
-
-            // Extract keywords
-            const keywords = this.extractKeywordsFromTranscript(transcript);
-
-            videosWithKeywords.push({
-                ...video,
-                keywords,
-                transcriptSegments: transcript.length
-            });
-
-            console.log(`📹 ${video.title}`);
-            console.log(`   Channel: ${video.channelTitle}`);
-            console.log(`   Keywords: ${keywords.slice(0, 8).join(', ')}${keywords.length > 8 ? '...' : ''}`);
-            console.log(`   Transcript: ${transcript.length} segments`);
-        }
-
-        return videosWithKeywords;
-    }
-
-    /**
-     * Batch analyze relevance of all videos at once
-     */
-    async batchAnalyzeRelevance(videosWithKeywords, userInterests) {
-        // Use fallback method if AI is disabled or not configured
-        if (!this.useAI) {
-            console.log('🔄 Using keyword-based analysis (AI disabled)');
-            return await this.fallbackRelevanceAnalysis(videosWithKeywords, userInterests);
-        }
-
-        const interestsText = this.formatUserInterests(userInterests);
-
-        // Prepare batch data for OpenRouter
-        const videoSummaries = videosWithKeywords.map((video, index) => {
-            return `${index + 1}. Title: "${video.title}"
-   Channel: ${video.channelTitle}
-   Duration: ${video.duration}
-   Keywords: ${video.keywords.slice(0, 15).join(', ')}`;
-        }).join('\n\n');
-
-        const prompt = `Analyze the relevance of these ${videosWithKeywords.length} YouTube videos for a user interested in: ${interestsText}
-
-Videos to analyze:
-${videoSummaries}
-
-For each video, provide a relevance score (0.0 to 1.0) and determine if it should receive detailed analysis.
-Consider:
-1. Direct match with user interests
-2. Educational/professional value  
-3. Practical applicability
-4. Content quality indicators
-
-Respond with JSON only - an array of objects:
-[
-  {
-    "videoIndex": 1,
-    "relevanceScore": 0.85,
-    "isRelevant": true,
-    "reasoning": "Brief explanation",
-    "keyTopics": ["topic1", "topic2"]
-  },
-  ...
-]`;
-
-        try {
-            console.log(`Sending batch analysis request for ${videosWithKeywords.length} videos...`);
-
-            const response = await AIAnalysisService.makeOpenRouterRequest([
-                { role: 'user', content: prompt }
-            ], 1500, 0.1);
-
-            const batchResults = AIAnalysisService.parseAIResponse(response.choices[0].message.content);
-            const cost = this.calculateTokenCost(response.usage?.total_tokens || 1500, 'google/gemini-2.0-flash-001');
-
-            console.log(`✅ Batch analysis complete - Cost: $${cost.toFixed(4)}`);
-            console.log(`📊 Analyzed ${batchResults.length} videos in single API call`);
-
-            // Map results back to videos
-            const results = batchResults.map(result => {
-                const video = videosWithKeywords[result.videoIndex - 1];
-                return {
-                    video,
-                    relevanceScore: result.relevanceScore || 0,
-                    isRelevant: result.isRelevant || false,
-                    reasoning: result.reasoning || '',
-                    keyTopics: result.keyTopics || [],
-                    cost: cost / batchResults.length // Distribute cost
-                };
-            });
-
-            // Log summary
-            const relevantCount = results.filter(r => r.isRelevant).length;
-            console.log(`📈 Results: ${relevantCount}/${results.length} videos marked as relevant`);
-
-            return results;
-
-        } catch (error) {
-            console.error('Batch relevance analysis failed:', error);
-            console.error('Error details:', {
-                message: error.message,
-                stack: error.stack?.substring(0, 500),
-                name: error.name
-            });
-
-            // Check if it's an API key issue
-            if (error.message?.includes('API key') || error.message?.includes('authentication')) {
-                console.error('❌ OpenRouter API key issue detected');
-            }
-
-            // Use fallback keyword-based analysis instead of marking all as irrelevant
-            console.log('🔄 Falling back to keyword-based relevance analysis...');
-            return await this.fallbackRelevanceAnalysis(videosWithKeywords, userInterests);
-        }
-    }
-
-    /**
-     * Fallback relevance analysis without AI
-     * Uses keyword matching and heuristics for scoring
-     */
-    async fallbackRelevanceAnalysis(videosWithKeywords, userInterests) {
-        console.log('🔄 Using fallback relevance analysis (keyword-based)');
-
-        const results = videosWithKeywords.map(video => {
-            const score = this.calculateKeywordRelevanceScore(video, userInterests);
-            const isRelevant = score >= 0.5; // Lower threshold for fallback method
-
-            return {
-                video,
-                relevanceScore: score,
-                isRelevant,
-                reasoning: `Keyword-based analysis (API unavailable)`,
-                keyTopics: this.extractTopicsFromVideo(video),
-                cost: 0
-            };
-        });
-
-        const relevantCount = results.filter(r => r.isRelevant).length;
-        console.log(`📈 Fallback Results: ${relevantCount}/${results.length} videos marked as relevant`);
-
-        return results;
-    }
-
-    /**
-     * Calculate relevance score based on keyword matching
-     */
-    calculateKeywordRelevanceScore(video, userInterests) {
-        let score = 0.0;
-        const title = video.title.toLowerCase();
-        const keywords = video.keywords.map(k => k.toLowerCase());
-        const channelTitle = video.channelTitle.toLowerCase();
-
-        // Get user interest keywords
-        const userKeywords = this.extractUserKeywords(userInterests);
-
-        // Title matching (highest weight)
-        for (const userKeyword of userKeywords) {
-            if (title.includes(userKeyword.toLowerCase())) {
-                score += 0.3;
-            }
-        }
-
-        // Keyword matching (medium weight)
-        for (const userKeyword of userKeywords) {
-            for (const videoKeyword of keywords) {
-                if (videoKeyword.includes(userKeyword.toLowerCase()) ||
-                    userKeyword.toLowerCase().includes(videoKeyword)) {
-                    score += 0.2;
-                }
-            }
-        }
-
-        // Channel matching (lower weight)
-        for (const userKeyword of userKeywords) {
-            if (channelTitle.includes(userKeyword.toLowerCase())) {
-                score += 0.1;
-            }
-        }
-
-        // Quality indicators
-        const qualityKeywords = ['tutorial', 'guide', 'how to', 'explained', 'course', 'learn'];
-        for (const quality of qualityKeywords) {
-            if (title.includes(quality)) {
-                score += 0.1;
-                break;
-            }
-        }
-
-        // Penalize clickbait
-        const clickbaitWords = ['shocking', 'insane', 'crazy', 'you won\'t believe', 'clickbait'];
-        for (const clickbait of clickbaitWords) {
-            if (title.includes(clickbait)) {
-                score -= 0.2;
-                break;
-            }
-        }
-
-        // Cap the score at 1.0
-        return Math.min(score, 1.0);
-    }
-
-    /**
-     * Extract keywords from user interests
-     */
-    extractUserKeywords(userInterests) {
-        const keywords = [];
-
-        if (!userInterests || typeof userInterests !== 'object') {
-            return ['programming', 'technology', 'software', 'development'];
-        }
-
-        for (const [category, data] of Object.entries(userInterests)) {
-            // Add category name
-            keywords.push(category);
-
-            // Add keywords if they exist
-            if (data.keywords && Array.isArray(data.keywords)) {
-                keywords.push(...data.keywords);
-            }
-
-            // Add subcategory names and keywords
-            if (data.subcategories) {
-                for (const [subcat, subdata] of Object.entries(data.subcategories)) {
-                    keywords.push(subcat);
-                    if (subdata.keywords && Array.isArray(subdata.keywords)) {
-                        keywords.push(...subdata.keywords);
-                    }
-                }
-            }
-        }
-
-        return [...new Set(keywords)]; // Remove duplicates
-    }
-
-    /**
-     * Extract topics from video data
-     */
-    extractTopicsFromVideo(video) {
-        const topics = [];
-        const title = video.title.toLowerCase();
-
-        // Common tech topics
-        const topicMap = {
-            'ai': ['artificial intelligence', 'machine learning', 'ai', 'ml', 'neural'],
-            'web development': ['web', 'html', 'css', 'javascript', 'react', 'vue', 'angular'],
-            'programming': ['programming', 'coding', 'developer', 'software'],
-            'mobile': ['mobile', 'ios', 'android', 'app development'],
-            'data science': ['data science', 'analytics', 'data', 'python', 'r'],
-            'devops': ['devops', 'docker', 'kubernetes', 'deployment', 'cloud'],
-            'tutorial': ['tutorial', 'guide', 'how to', 'course', 'learn']
-        };
-
-        for (const [topic, keywords] of Object.entries(topicMap)) {
-            for (const keyword of keywords) {
-                if (title.includes(keyword)) {
-                    topics.push(topic);
-                    break;
-                }
-            }
-        }
-
-        return topics.length > 0 ? topics : ['general'];
-    }
-
-    /**
-     * Format user interests for AI prompt
-     */
-    formatUserInterests(interests) {
-        if (!interests || Object.keys(interests).length === 0) {
-            return 'general programming and technology topics';
-        }
-
-        const formatted = Object.entries(interests).map(([category, data]) => {
-            const keywords = data.keywords && data.keywords.length > 0
-                ? ` (${data.keywords.slice(0, 5).join(', ')})`
-                : '';
-            return `${category}${keywords}`;
-        }).join(', ');
-
-        return formatted;
-    }
-
-    /**
-     * Calculate token cost
-     */
-    calculateTokenCost(tokens, model) {
-        const costs = {
-            'gpt-3.5-turbo': 0.002 / 1000, // $0.002 per 1k tokens
-            'gpt-4': 0.03 / 1000, // $0.03 per 1k tokens
-            'google/gemini-2.0-flash-001': 0.0 / 1000, // Free model
-            'meta-llama/llama-3.1-8b-instruct:free': 0.0 / 1000, // Free model
-            'microsoft/wizardlm-2-8x22b': 0.00055 / 1000, // $0.00055 per 1k tokens
-            'openrouter/horizon-beta': 0.001 / 1000 // $0.001 per 1k tokens (estimated)
-        };
-
-        return tokens * (costs[model] || costs['google/gemini-2.0-flash-001']);
-    }
-
-    /**
-     * Calculate matched interests between user and content
-     */
     calculateMatchedInterests(userInterests, content) {
+        // Simplified version - delegate complex logic to AI analysis system
         if (!userInterests || !content) return [];
 
         const matchedInterests = [];
-        const contentKeywords = content.transcript?.extractedKeywords || [];
-        const contentTopics = content.analysis?.mainTopics || [];
         const contentText = (content.title + ' ' + (content.description || '')).toLowerCase();
 
-        // Handle both array (legacy) and object (hierarchical) user interests formats
         if (Array.isArray(userInterests)) {
-            // Legacy format - simple array of interests
             for (const interest of userInterests) {
-                const interestLower = interest.toLowerCase();
-
-                // Check if interest matches content
-                if (contentText.includes(interestLower) ||
-                    contentKeywords.some(keyword => keyword.toLowerCase().includes(interestLower)) ||
-                    contentTopics.some(topic => topic.toLowerCase().includes(interestLower))) {
+                if (contentText.includes(interest.toLowerCase())) {
                     matchedInterests.push(interest);
                 }
             }
         } else if (typeof userInterests === 'object') {
-            // Hierarchical format - object with categories
             for (const [category, data] of Object.entries(userInterests)) {
-                const categoryLower = category.toLowerCase();
-                let categoryMatched = false;
-
-                // Check category name match
-                if (contentText.includes(categoryLower) ||
-                    contentKeywords.some(keyword => keyword.toLowerCase().includes(categoryLower)) ||
-                    contentTopics.some(topic => topic.toLowerCase().includes(categoryLower))) {
-                    categoryMatched = true;
-                }
-
-                // Check keywords within the category
-                if (data.keywords && Array.isArray(data.keywords)) {
-                    for (const keyword of data.keywords) {
-                        const keywordLower = keyword.toLowerCase();
-                        if (contentText.includes(keywordLower) ||
-                            contentKeywords.some(ck => ck.toLowerCase().includes(keywordLower)) ||
-                            contentTopics.some(topic => topic.toLowerCase().includes(keywordLower))) {
-                            categoryMatched = true;
-                            break;
-                        }
-                    }
-                }
-
-                if (categoryMatched) {
+                if (contentText.includes(category.toLowerCase())) {
                     matchedInterests.push(category);
                 }
             }
         }
 
-        return [...new Set(matchedInterests)]; // Remove duplicates
+        return [...new Set(matchedInterests)];
     }
 
-    /**
-     * Generate personalized highlights based on user interests
-     */
     generatePersonalizedHighlights(content, userInterests) {
-        if (!content.transcript?.segments || !userInterests) return [];
+        // Simplified version - could be enhanced to use AI analysis system
+        if (!content.transcript?.segments) return [];
 
-        const personalizedHighlights = [];
         const segments = content.transcript.segments || [];
-        const matchedInterests = this.calculateMatchedInterests(userInterests, content);
-
-        // If no matched interests, return general highlights
-        if (matchedInterests.length === 0) {
-            return segments.slice(0, 2).map(segment =>
-                `${segment.text?.substring(0, 100)}...`
-            ).filter(h => h.length > 10);
-        }
-
-        // Find segments that relate to user interests
-        for (const segment of segments.slice(0, 10)) { // Limit search to first 10 segments
-            if (!segment.text) continue;
-
-            const segmentTextLower = segment.text.toLowerCase();
-            let isRelevant = false;
-
-            // Check if segment mentions user interests
-            for (const interest of matchedInterests) {
-                const interestLower = interest.toLowerCase();
-                if (segmentTextLower.includes(interestLower)) {
-                    isRelevant = true;
-                    break;
-                }
-            }
-
-            // Also check for technical keywords if user has programming/tech interests
-            if (!isRelevant && matchedInterests.some(i =>
-                i.toLowerCase().includes('programming') ||
-                i.toLowerCase().includes('technology') ||
-                i.toLowerCase().includes('development')
-            )) {
-                const techKeywords = ['function', 'algorithm', 'code', 'programming', 'development', 'software', 'api', 'database'];
-                if (techKeywords.some(keyword => segmentTextLower.includes(keyword))) {
-                    isRelevant = true;
-                }
-            }
-
-            if (isRelevant) {
-                const highlight = segment.text.length > 150
-                    ? segment.text.substring(0, 150) + '...'
-                    : segment.text;
-                personalizedHighlights.push(highlight);
-            }
-
-            // Limit to 3 highlights
-            if (personalizedHighlights.length >= 3) break;
-        }
-
-        // If no specific highlights found, use general highlights
-        if (personalizedHighlights.length === 0) {
-            return segments.slice(0, 2).map(segment =>
-                segment.text?.substring(0, 100) + '...'
-            ).filter(h => h && h.length > 10);
-        }
-
-        return personalizedHighlights;
+        return segments.slice(0, 2).map(segment =>
+            segment.text?.substring(0, 150) + '...'
+        ).filter(h => h && h.length > 10);
     }
 
-    async processTodaysContentOnly(userId) {
-        try {
-            console.log(`Processing only today's content for user: ${userId}`);
-
-            const user = await User.findById(userId);
-            if (!user || !user.youtubeSources || user.youtubeSources.length === 0) {
-                return { success: false, reason: 'No YouTube sources found' };
-            }
-
-            // Get start and end of today in UTC (more precise handling)
-            const today = new Date();
-
-            // Create today's boundaries in UTC
-            const startOfToday = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()));
-            const endOfToday = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate() + 1));
-
-            console.log(`Today's date range (UTC): ${startOfToday.toISOString()} to ${endOfToday.toISOString()}`);
-            console.log(`Current time: ${today.toISOString()}`);
-
-            let todaysVideos = [];
-            const channelResults = [];
-            let totalVideosChecked = 0; for (const source of user.youtubeSources) {
-                try {
-                    let videos = [];
-                    try {
-                        // Use efficient date-filtered API call instead of fetching all recent videos
-                        videos = await YouTubeService.getChannelVideosAfter(source.channelId, startOfToday, 10);
-                    } catch (error) {
-                        console.log(`Failed to get today's videos from ${source.channelId}: ${error.message}`);
-                        console.log(`Falling back to manual filtering for channel ${source.channelId}`);
-
-                        // Fallback to old method if date filtering fails
-                        try {
-                            const allVideos = await YouTubeService.getChannelVideos(source.channelId, 5);
-                            videos = allVideos.filter(video => {
-                                const publishedDate = new Date(video.publishedAt);
-                                return publishedDate >= startOfToday && publishedDate < endOfToday;
-                            });
-                        } catch (fallbackError) {
-                            console.log(`Fallback also failed for ${source.channelId}, skipping`);
-                            continue;
-                        }
-                    }
-
-                    // Filter out videos that have already been processed
-                    const newTodaysVideos = [];
-                    for (const video of videos) {
-                        totalVideosChecked++;
-                        const publishedDate = new Date(video.publishedAt);
-                        const daysAgo = this.getDaysAgo(publishedDate);
-                        const hoursAgo = (new Date() - publishedDate) / (1000 * 60 * 60);
-
-                        console.log(`Video: "${video.title}" - Published: ${publishedDate.toISOString()} (${hoursAgo.toFixed(1)} hours ago)`);
-
-                        // Check if already processed (should be minimal since we're fetching only today's videos)
-                        const existingContent = await Content.findOne({
-                            sourceId: video.id,
-                            source: 'youtube',
-                            processed: true,
-                            processedAt: { $exists: true }
-                        });
-
-                        if (!existingContent) {
-                            newTodaysVideos.push(video);
-                            console.log(`✅ Found new today's video: ${video.title} (${hoursAgo.toFixed(1)} hours ago)`);
-                        } else {
-                            console.log(`⏭️  Today's video already processed: ${video.title}`);
-                        }
-                    }
-
-                    todaysVideos.push(...newTodaysVideos);
-                    channelResults.push({
-                        channelId: source.channelId,
-                        channelTitle: source.channelTitle,
-                        apiMethod: videos.length > 0 ? 'date-filtered' : 'none',
-                        videosFromAPI: videos.length,
-                        todaysVideosFound: newTodaysVideos.length
-                    });
-
-                } catch (error) {
-                    console.error(`Error collecting today's videos from channel ${source.channelId}:`, error);
-                    channelResults.push({
-                        channelId: source.channelId,
-                        channelTitle: source.channelTitle,
-                        error: error.message
-                    });
-                }
-            }
-
-            if (todaysVideos.length === 0) {
-                console.log(`No new videos from today found to process (checked ${totalVideosChecked} total videos)`);
-                return {
-                    success: true,
-                    userId,
-                    totalVideosChecked,
-                    totalVideosQueued: 0,
-                    channelResults
-                };
-            }
-
-            console.log(`Found ${todaysVideos.length} new videos from today across ${user.youtubeSources.length} channels (checked ${totalVideosChecked} total)`);
-
-            // Process today's videos using existing batch analysis
-            const videosWithKeywords = await this.extractKeywordsFromAllVideos(todaysVideos);
-            const aggregatedInterests = this.aggregateUserInterests([user]);
-            const relevanceResults = await this.batchAnalyzeRelevance(videosWithKeywords, aggregatedInterests);
-
-            let processedCount = 0;
-            for (const result of relevanceResults) {
-                if (result.isRelevant) {
-                    console.log(`✅ Processing relevant today's video: ${result.video.title}`);
-                    await this.queueVideoProcessing(result.video.id, result.video, [userId]);
-                    processedCount++;
-                } else {
-                    console.log(`❌ Skipping irrelevant today's video: ${result.video.title} (score: ${result.relevanceScore})`);
-                }
-            }
-
-            console.log(`Today's content processing complete - Analyzed: ${todaysVideos.length}, Queued: ${processedCount}`);
-
-            return {
-                success: true,
-                userId,
-                totalVideosAnalyzed: todaysVideos.length,
-                totalVideosQueued: processedCount,
-                relevanceResults: relevanceResults.map(r => ({
-                    videoId: r.video.id,
-                    title: r.video.title,
-                    relevanceScore: r.relevanceScore,
-                    isRelevant: r.isRelevant,
-                    reasoning: r.reasoning
-                })),
-                channelResults
-            };
-
-        } catch (error) {
-            console.error(`Error processing today's content for user ${userId}:`, error);
-            throw error;
-        }
-    }
-
-    // Helper function to calculate days ago
-    getDaysAgo(date) {
-        const now = new Date();
-        const diffTime = Math.abs(now - date);
-        const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
-        return diffDays;
+    async cleanup() {
+        console.log('SimpleJobQueue: Performing cleanup...');
+        this.isProcessing = false;
+        console.log('SimpleJobQueue: Cleanup complete');
     }
 }
 
-module.exports = new SimpleJobQueue();
+module.exports = new SimpleJobQueueRefactored();
