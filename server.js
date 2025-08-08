@@ -80,7 +80,7 @@ app.post('/api/admin/trigger/channel-monitoring', async (req, res) => {
 // AI Analysis cost monitoring endpoint
 app.get('/api/admin/ai/stats', async (req, res) => {
     try {
-        const AIAnalysisService = require('./services/AIAnalysisService');
+        const AIAnalysisService = require('./services/AIAnalysisServiceRefactored');
         const stats = AIAnalysisService.getAnalysisStats();
 
         // Get cost data from recent content
@@ -145,7 +145,7 @@ app.get('/api/admin/ai/stats', async (req, res) => {
 // AI Analysis configuration update endpoint
 app.put('/api/admin/ai/config', async (req, res) => {
     try {
-        const AIAnalysisService = require('./services/AIAnalysisService');
+        const AIAnalysisService = require('./services/AIAnalysisServiceRefactored');
         const { config } = req.body;
 
         if (!config) {

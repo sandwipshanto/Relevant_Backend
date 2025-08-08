@@ -113,9 +113,13 @@ console.log(`Skipped ${importResponse.data.totalSkipped} existing channels`);
 // Remove YouTube channel
 await axios.delete('/api/user/youtube-sources/UC_x5XG1OV2P6uZZ5FSM9Ttw');
 
-// Process user's subscriptions
+// Process user's subscriptions (full analysis)
 const processResponse = await axios.post('/api/content/process-subscriptions');
 console.log('Success:', processResponse.data.success);
+
+// Process only today's content (efficient, no duplicates)
+const todayResponse = await axios.post('/api/content/process-today');
+console.log('Today\'s content:', todayResponse.data.msg);
 
 // Process specific video
 await axios.post('/api/content/process-video', {
@@ -257,7 +261,8 @@ try {
 | GET | `/saved/list` | Get saved content | Yes |
 | GET | `/processing/status` | Get processing status | Yes |
 | POST | `/process-video` | Process specific video | Yes |
-| POST | `/process-subscriptions` | Process user subscriptions | Yes |
+| POST | `/process-subscriptions` | Process user subscriptions (full) | Yes |
+| POST | `/process-today` | Process today's content only (no duplicates) | Yes |
 | POST | `/:id/view` | Mark content as viewed | Yes |
 | POST | `/:id/like` | Like/unlike content | Yes |
 | POST | `/:id/save` | Save/unsave content | Yes |
@@ -297,10 +302,10 @@ The backend now implements a multi-stage AI analysis pipeline designed to minimi
    - ~$0.001 per item processed
    - Filters content for final stage
 
-4. **Stage 4: Full AI Analysis (HIGH COST - LIMITED)**
+4. **Stage 4: Full AI Analysis (MEDIUM COST - LIMITED)**
    - Comprehensive analysis for top candidates only
    - Maximum 5 items per batch by default
-   - ~$0.05 per item processed
+   - ~$0.008 per item processed (using GPT-3.5-turbo)
    - Full topic extraction, sentiment analysis, highlights
 
 ### Cost Control Features
@@ -323,11 +328,11 @@ GET /api/admin/ai/stats
   "success": true,
   "stats": {
     "config": {
-      "minTitleRelevance": 0.3,
+      "minTitleRelevance": 0.7,
       "keywordMatchThreshold": 2,
       "quickScoreThreshold": 0.6,
-      "maxFullAnalysis": 5,
-      "fullAnalysisThreshold": 0.8
+      "maxFullAnalysis": 3,
+      "fullAnalysisThreshold": 0.75
     },
     "irrelevantKeywords": 15,
     "qualityIndicators": 15
@@ -344,8 +349,9 @@ PUT /api/admin/ai/config
 ```json
 {
   "maxFullAnalysis": 3,
-  "quickScoreThreshold": 0.7,
-  "fullAnalysisThreshold": 0.85
+  "quickScoreThreshold": 0.6,
+  "fullAnalysisThreshold": 0.75,
+  "minTitleRelevance": 0.7
 }
 ```
 
@@ -355,10 +361,10 @@ PUT /api/admin/ai/config
   "success": true,
   "msg": "AI analysis configuration updated",
   "newConfig": {
-    "minTitleRelevance": 0.3,
+    "minTitleRelevance": 0.7,
     "maxFullAnalysis": 3,
-    "quickScoreThreshold": 0.7,
-    "fullAnalysisThreshold": 0.85
+    "quickScoreThreshold": 0.6,
+    "fullAnalysisThreshold": 0.75
   }
 }
 ```
@@ -367,7 +373,8 @@ PUT /api/admin/ai/config
 
 ## 💰 Cost Optimization Benefits
 
-- **85-95% Cost Reduction**: Only process high-relevance content with expensive AI
+- **95%+ Cost Reduction**: Switched from GPT-4 to GPT-3.5-turbo for all analysis
+- **High Relevance Only**: Only show content with 70%+ relevance score
 - **Smart Filtering**: Multi-stage approach eliminates irrelevant content early
 - **Configurable Limits**: Admin controls prevent budget overruns
 - **Real-time Monitoring**: Track costs and adjust thresholds dynamically

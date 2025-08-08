@@ -5,7 +5,7 @@ const UserContent = require('../models/UserContent');
 const User = require('../models/User');
 const auth = require('../middleware/auth');
 const YouTubeService = require('../services/YouTubeService');
-const AIAnalysisService = require('../services/AIAnalysisService');
+const AIAnalysisService = require('../services/AIAnalysisServiceRefactored');
 const JobQueue = require('../services/SimpleJobQueue');
 
 const router = express.Router();

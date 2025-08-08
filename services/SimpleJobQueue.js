@@ -1,6 +1,6 @@
 // Simple in-memory job queue for development/testing without Redis
 const YouTubeService = require('./YouTubeService');
-const AIAnalysisService = require('./AIAnalysisService');
+const AIAnalysisService = require('./AIAnalysisServiceRefactored');
 const User = require('../models/User');
 const Content = require('../models/Content');
 const UserContent = require('../models/UserContent');
@@ -11,12 +11,10 @@ class SimpleJobQueue {
         this.activeJobs = new Map();
         this.jobId = 0;
         this.isProcessing = false;
-        this.useOpenAI = process.env.OPENAI_API_KEY && process.env.USE_OPENAI !== 'false';
+        this.useAI = true; // Always use AI with OpenRouter
         this.setupProcessor();
 
-        if (!this.useOpenAI) {
-            console.log('🔄 Running in keyword-based analysis mode (OpenAI disabled)');
-        }
+        console.log('🔄 Running with OpenRouter AI analysis mode');
     }
 
     setupProcessor() {
@@ -134,10 +132,10 @@ class SimpleJobQueue {
                 });
                 const aggregatedInterests = this.aggregateUserInterests(users);
 
-                // Step 4: Use OpenAI to analyze video relevance with keywords only
+                // Step 4: Use OpenRouter to analyze video relevance with keywords only
                 let analysis;
                 try {
-                    console.log(`Starting OpenAI relevance analysis for video: ${videoId}`);
+                    console.log(`Starting OpenRouter relevance analysis for video: ${videoId}`);
 
                     const relevanceAnalysis = await AIAnalysisService.analyzeVideoRelevance({
                         id: videoId,
@@ -1048,15 +1046,15 @@ class SimpleJobQueue {
      * Batch analyze relevance of all videos at once
      */
     async batchAnalyzeRelevance(videosWithKeywords, userInterests) {
-        // Use fallback method if OpenAI is disabled or not configured
-        if (!this.useOpenAI) {
-            console.log('🔄 Using keyword-based analysis (OpenAI disabled)');
+        // Use fallback method if AI is disabled or not configured
+        if (!this.useAI) {
+            console.log('🔄 Using keyword-based analysis (AI disabled)');
             return await this.fallbackRelevanceAnalysis(videosWithKeywords, userInterests);
         }
 
         const interestsText = this.formatUserInterests(userInterests);
 
-        // Prepare batch data for OpenAI
+        // Prepare batch data for OpenRouter
         const videoSummaries = videosWithKeywords.map((video, index) => {
             return `${index + 1}. Title: "${video.title}"
    Channel: ${video.channelTitle}
@@ -1091,15 +1089,12 @@ Respond with JSON only - an array of objects:
         try {
             console.log(`Sending batch analysis request for ${videosWithKeywords.length} videos...`);
 
-            const response = await AIAnalysisService.getOpenAIClient().chat.completions.create({
-                model: 'gpt-3.5-turbo',
-                messages: [{ role: 'user', content: prompt }],
-                max_tokens: 1500, // Increased for batch response
-                temperature: 0.1
-            });
+            const response = await AIAnalysisService.makeOpenRouterRequest([
+                { role: 'user', content: prompt }
+            ], 1500, 0.1);
 
-            const batchResults = JSON.parse(response.choices[0].message.content);
-            const cost = this.calculateTokenCost(response.usage.total_tokens, 'gpt-3.5-turbo');
+            const batchResults = AIAnalysisService.parseAIResponse(response.choices[0].message.content);
+            const cost = this.calculateTokenCost(response.usage?.total_tokens || 1500, 'google/gemini-2.0-flash-001');
 
             console.log(`✅ Batch analysis complete - Cost: $${cost.toFixed(4)}`);
             console.log(`📊 Analyzed ${batchResults.length} videos in single API call`);
@@ -1133,7 +1128,7 @@ Respond with JSON only - an array of objects:
 
             // Check if it's an API key issue
             if (error.message?.includes('API key') || error.message?.includes('authentication')) {
-                console.error('❌ OpenAI API key issue detected');
+                console.error('❌ OpenRouter API key issue detected');
             }
 
             // Use fallback keyword-based analysis instead of marking all as irrelevant
@@ -1143,7 +1138,7 @@ Respond with JSON only - an array of objects:
     }
 
     /**
-     * Fallback relevance analysis without OpenAI
+     * Fallback relevance analysis without AI
      * Uses keyword matching and heuristics for scoring
      */
     async fallbackRelevanceAnalysis(videosWithKeywords, userInterests) {
@@ -1291,7 +1286,7 @@ Respond with JSON only - an array of objects:
     }
 
     /**
-     * Format user interests for OpenAI prompt
+     * Format user interests for AI prompt
      */
     formatUserInterests(interests) {
         if (!interests || Object.keys(interests).length === 0) {
@@ -1314,10 +1309,14 @@ Respond with JSON only - an array of objects:
     calculateTokenCost(tokens, model) {
         const costs = {
             'gpt-3.5-turbo': 0.002 / 1000, // $0.002 per 1k tokens
-            'gpt-4': 0.03 / 1000 // $0.03 per 1k tokens
+            'gpt-4': 0.03 / 1000, // $0.03 per 1k tokens
+            'google/gemini-2.0-flash-001': 0.0 / 1000, // Free model
+            'meta-llama/llama-3.1-8b-instruct:free': 0.0 / 1000, // Free model
+            'microsoft/wizardlm-2-8x22b': 0.00055 / 1000, // $0.00055 per 1k tokens
+            'openrouter/horizon-beta': 0.001 / 1000 // $0.001 per 1k tokens (estimated)
         };
 
-        return tokens * (costs[model] || costs['gpt-3.5-turbo']);
+        return tokens * (costs[model] || costs['google/gemini-2.0-flash-001']);
     }
 
     /**

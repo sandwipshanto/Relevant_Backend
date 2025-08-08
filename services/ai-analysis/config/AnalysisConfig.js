@@ -1,0 +1,57 @@
+/**
+ * AI Analysis Configuration
+ * Centralized configuration for all analysis parameters
+ */
+
+module.exports = {
+    // Analysis thresholds
+    thresholds: {
+        minTitleRelevance: 0.7,
+        minDescriptionLength: 50,
+        maxDescriptionLength: 5000,
+        keywordMatchThreshold: 2,
+        quickScoreThreshold: 0.6,
+        fullAnalysisThreshold: 0.75,
+        minDurationSeconds: 120,
+        maxDurationSeconds: 7200
+    },
+
+    // Processing limits
+    processing: {
+        batchSize: 5,
+        maxFullAnalysis: 3,
+        maxTokensQuick: 200,
+        maxTokensFull: 800,
+        temperature: 0.3
+    },
+
+    // Cost estimates (per item)
+    costs: {
+        quickAnalysis: 0.002,
+        fullAnalysis: 0.008
+    },
+
+    // API models
+    models: {
+        primary: 'google/gemini-2.0-flash-001',
+        fallback: 'meta-llama/llama-3.1-8b-instruct:free'
+    },
+
+    // Quality score weights
+    scoring: {
+        qualityWeight: 0.4,
+        relevanceWeight: 0.4,
+        alignmentWeight: 0.2,
+
+        // Quality indicators
+        qualityIndicatorScore: 0.1,
+        domainMatchScore: 0.1,
+        viewCountBonusHigh: 0.2,
+        viewCountBonusMed: 0.1,
+        viewCountThresholdHigh: 100000,
+        viewCountThresholdMed: 10000,
+        durationBonusScore: 0.1,
+        durationMinOptimal: 300,  // 5 minutes
+        durationMaxOptimal: 3600  // 1 hour
+    }
+};
