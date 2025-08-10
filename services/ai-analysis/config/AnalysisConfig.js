@@ -6,29 +6,30 @@
 module.exports = {
     // Analysis thresholds
     thresholds: {
-        minTitleRelevance: 0.7,
+        minTitleRelevance: 0.3, // Lowered from 0.5 for testing - AI gives good matches 0.7+
         minDescriptionLength: 50,
         maxDescriptionLength: 5000,
         keywordMatchThreshold: 2,
         quickScoreThreshold: 0.6,
         fullAnalysisThreshold: 0.75,
-        minDurationSeconds: 120,
-        maxDurationSeconds: 7200
+        minDurationSeconds: 60, // Lowered from 120 to include tutorial shorts
+        maxDurationSeconds: 28800 // Increased from 7200 (2h) to 28800 (8h) for long courses
     },
 
     // Processing limits
     processing: {
-        batchSize: 5,
-        maxFullAnalysis: 3,
-        maxTokensQuick: 200,
-        maxTokensFull: 800,
+        batchSize: 3, // Reduced for more thorough individual analysis
+        maxFullAnalysis: 10, // Increased since we only have one AI stage now
+        maxTokensQuick: 200, // Legacy - not used in comprehensive analyzer
+        maxTokensFull: 1000, // Increased for comprehensive analysis
         temperature: 0.3
     },
 
     // Cost estimates (per item)
     costs: {
-        quickAnalysis: 0.002,
-        fullAnalysis: 0.008
+        quickAnalysis: 0.002, // Legacy - not used
+        fullAnalysis: 0.010,  // Increased due to more comprehensive analysis
+        comprehensiveAnalysis: 0.012 // New comprehensive analysis cost
     },
 
     // API models

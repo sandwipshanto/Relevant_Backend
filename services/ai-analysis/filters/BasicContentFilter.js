@@ -50,9 +50,23 @@ class BasicContentFilter extends BaseFilter {
                 return false;
             }
 
-            // Description length check
-            if (!content.description || content.description.length < this.config.minDescriptionLength) {
-                this.logFilterReason(content, 'Description too short');
+            // Description length check - be more lenient for videos with good titles
+            if (!content.description) {
+                content.description = ''; // Handle missing descriptions
+            }
+            
+            // Allow shorter descriptions if title has quality indicators
+            const title = content.title.toLowerCase();
+            const hasQualityTitle = this.qualityIndicators.some(indicator => 
+                title.includes(indicator.toLowerCase())
+            ) || this.professionalDomains.some(domain => 
+                title.includes(domain.toLowerCase())
+            );
+            
+            const minDescLength = hasQualityTitle ? 0 : this.config.minDescriptionLength;
+            
+            if (content.description.length < minDescLength) {
+                this.logFilterReason(content, `Description too short (${content.description.length} chars, need ${minDescLength})`);
                 return false;
             }
 

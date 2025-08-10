@@ -289,8 +289,16 @@ router.get('/feed', auth, async (req, res) => {
             tags: uc.contentId.tags,
             category: uc.contentId.category,
 
-            // Include analysis data
+            // Include comprehensive AI analysis data
             analysis: uc.contentId.analysis,
+            relevanceScore: uc.contentId.analysis?.relevanceScore || uc.relevanceScore,
+            summary: uc.contentId.analysis?.summary || uc.personalizedSummary,
+            highlights: uc.contentId.analysis?.highlights || uc.personalizedHighlights || [],
+            keyPoints: uc.contentId.analysis?.keyPoints || [],
+            categories: uc.contentId.analysis?.categories || [uc.contentId.category],
+            complexity: uc.contentId.analysis?.complexity || 'intermediate',
+            estimatedWatchTime: uc.contentId.analysis?.estimatedWatchTime || uc.contentId.duration,
+            recommendationReason: uc.contentId.analysis?.recommendationReason || 'Matches your interests',
 
             // Include user-specific data
             userContent: {
@@ -557,6 +565,134 @@ router.get('/saved/list', auth, async (req, res) => {
         res.status(500).json({
             success: false,
             msg: 'Error fetching saved content'
+        });
+    }
+});
+
+// Get content filtered by relevance score
+router.get('/by-relevance', auth, async (req, res) => {
+    try {
+        const {
+            minRelevance = 0.0,
+            maxRelevance = 1.0,
+            page = 1,
+            limit = 20,
+            sortBy = 'relevance' // 'relevance' | 'date' | 'popularity'
+        } = req.query;
+
+        const skip = (page - 1) * limit;
+
+        // Build sort criteria
+        let sortCriteria;
+        switch (sortBy) {
+            case 'date':
+                sortCriteria = { createdAt: -1 };
+                break;
+            case 'popularity':
+                sortCriteria = { 'contentId.viewCount': -1 };
+                break;
+            default:
+                sortCriteria = { relevanceScore: -1 };
+        }
+
+        // Get user's content with relevance filtering
+        const userContent = await UserContent.find({
+            userId: req.user.id,
+            relevanceScore: {
+                $gte: parseFloat(minRelevance),
+                $lte: parseFloat(maxRelevance)
+            },
+            dismissed: false
+        })
+            .populate('contentId')
+            .sort(sortCriteria)
+            .skip(skip)
+            .limit(parseInt(limit));
+
+        // Filter out null content and transform
+        const validContent = userContent.filter(uc => uc.contentId);
+
+        const transformedContent = validContent.map(uc => ({
+            id: uc.contentId._id,
+            title: uc.contentId.title,
+            description: uc.contentId.description,
+            url: uc.contentId.url,
+            thumbnail: uc.contentId.thumbnail,
+            duration: uc.contentId.duration,
+            sourceChannel: uc.contentId.sourceChannel,
+            publishedAt: uc.contentId.publishedAt,
+
+            // AI Analysis data
+            relevanceScore: uc.contentId.analysis?.relevanceScore || uc.relevanceScore,
+            summary: uc.contentId.analysis?.summary || uc.personalizedSummary,
+            highlights: uc.contentId.analysis?.highlights || [],
+            keyPoints: uc.contentId.analysis?.keyPoints || [],
+            categories: uc.contentId.analysis?.categories || [],
+            complexity: uc.contentId.analysis?.complexity || 'intermediate',
+            estimatedWatchTime: uc.contentId.analysis?.estimatedWatchTime,
+            recommendationReason: uc.contentId.analysis?.recommendationReason,
+
+            // User interaction data
+            userContent: {
+                id: uc._id,
+                viewed: uc.viewed,
+                liked: uc.liked,
+                saved: uc.saved,
+                matchedInterests: uc.matchedInterests,
+                createdAt: uc.createdAt
+            }
+        }));
+
+        // Get relevance distribution for filtering UI
+        const relevanceStats = await UserContent.aggregate([
+            {
+                $match: {
+                    userId: req.user.id,
+                    dismissed: false
+                }
+            },
+            {
+                $group: {
+                    _id: null,
+                    avgRelevance: { $avg: '$relevanceScore' },
+                    minRelevance: { $min: '$relevanceScore' },
+                    maxRelevance: { $max: '$relevanceScore' },
+                    totalCount: { $sum: 1 },
+                    highRelevanceCount: {
+                        $sum: {
+                            $cond: [{ $gte: ['$relevanceScore', 0.7] }, 1, 0]
+                        }
+                    }
+                }
+            }
+        ]);
+
+        res.json({
+            success: true,
+            content: transformedContent,
+            pagination: {
+                currentPage: parseInt(page),
+                totalItems: transformedContent.length,
+                hasMore: transformedContent.length === parseInt(limit)
+            },
+            filters: {
+                minRelevance: parseFloat(minRelevance),
+                maxRelevance: parseFloat(maxRelevance),
+                sortBy
+            },
+            stats: relevanceStats[0] || {
+                avgRelevance: 0,
+                minRelevance: 0,
+                maxRelevance: 1,
+                totalCount: 0,
+                highRelevanceCount: 0
+            }
+        });
+    } catch (err) {
+        console.error('Relevance filter error:', err.message);
+        res.status(500).json({
+            success: false,
+            msg: 'Error filtering content by relevance'
         });
     }
 });

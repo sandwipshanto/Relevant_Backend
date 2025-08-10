@@ -6,8 +6,7 @@
 const BasicContentFilter = require('./filters/BasicContentFilter');
 const KeywordRelevanceFilter = require('./filters/KeywordRelevanceFilter');
 const QualityScorer = require('./filters/QualityScorer');
-const QuickAIAnalyzer = require('./filters/QuickAIAnalyzer');
-const FullAIAnalyzer = require('./filters/FullAIAnalyzer');
+const ComprehensiveAIAnalyzer = require('./filters/ComprehensiveAIAnalyzer');
 const AnalysisConfig = require('./config/AnalysisConfig');
 
 class AnalysisPipeline {
@@ -16,8 +15,7 @@ class AnalysisPipeline {
             new BasicContentFilter(),
             new KeywordRelevanceFilter(),
             new QualityScorer(),
-            new QuickAIAnalyzer(),
-            new FullAIAnalyzer()
+            new ComprehensiveAIAnalyzer()
         ];
 
         this.config = AnalysisConfig.thresholds;
@@ -100,14 +98,14 @@ class AnalysisPipeline {
 
     applyFinalFilter(content) {
         const filtered = content.filter(item =>
-            (item.finalRelevanceScore || item.quickAiScore || item.combinedScore || 0) >= this.config.minTitleRelevance
+            (item.relevanceScore || item.finalRelevanceScore || item.quickAiScore || item.combinedScore || 0) >= this.config.minTitleRelevance
         );
 
         console.log(`\n🎯 Final filter: ${filtered.length}/${content.length} items above threshold (${this.config.minTitleRelevance})`);
 
         return filtered.sort((a, b) =>
-            (b.finalRelevanceScore || b.quickAiScore || b.combinedScore || 0) -
-            (a.finalRelevanceScore || a.quickAiScore || a.combinedScore || 0)
+            (b.relevanceScore || b.finalRelevanceScore || b.quickAiScore || b.combinedScore || 0) -
+            (a.relevanceScore || a.finalRelevanceScore || a.quickAiScore || a.combinedScore || 0)
         );
     }
 
@@ -180,9 +178,12 @@ class AnalysisPipeline {
         if (result.analyzedContent.length > 0) {
             console.log(`\n🏆 Top Results:`);
             result.analyzedContent.slice(0, 3).forEach((content, index) => {
-                const score = content.finalRelevanceScore || content.quickAiScore || content.combinedScore || 0;
+                const score = content.relevanceScore || content.finalRelevanceScore || content.quickAiScore || content.combinedScore || 0;
                 console.log(`   ${index + 1}. ${content.title.substring(0, 50)}...`);
-                console.log(`      Score: ${score.toFixed(3)} | Stage: ${content.processingStage || 'unknown'}`);
+                console.log(`      Relevance: ${score.toFixed(3)} | Stage: ${content.processingStage || 'unknown'}`);
+                if (content.summary) {
+                    console.log(`      Summary: ${content.summary.substring(0, 80)}...`);
+                }
             });
         }
 

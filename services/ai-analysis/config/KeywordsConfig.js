@@ -9,7 +9,7 @@ module.exports = {
         'clickbait', 'drama', 'gossip', 'scandal', 'reaction', 'react',
         'unboxing', 'haul', 'vlog', 'daily life', 'random', 'asmr',
         'weird', 'crazy', 'insane', 'shocking', 'you won\'t believe',
-        'prank', 'challenge', 'tiktok', 'shorts', 'meme', 'funny',
+        'prank', 'challenge', 'tiktok', 'meme', 'funny',
         'entertainment only', 'just for fun', 'random thoughts'
     ],
 

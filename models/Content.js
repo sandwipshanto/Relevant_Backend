@@ -45,18 +45,57 @@ const ContentSchema = new mongoose.Schema({
         }]
     },
     analysis: {
-        mainTopics: [String],
+        // Core AI Analysis from ComprehensiveAIAnalyzer
+        relevanceScore: {
+            type: Number,
+            min: 0,
+            max: 1,
+            default: 0
+        },
         summary: String,
         highlights: [{
             text: String,
-            timestamp: Number,
-            relevanceScore: Number,
-            matchedInterests: [String]
+            relevance: {
+                type: Number,
+                min: 0,
+                max: 1
+            },
+            reason: String,
+            timestamp: Number // for video segments
         }],
         keyPoints: [String],
-        sentiment: String,
-        complexity: Number, // 1-10
-        overallRelevanceScore: Number // 0-100
+        categories: [String],
+        tags: [String],
+
+        // Additional metadata
+        complexity: {
+            type: String,
+            enum: ['beginner', 'intermediate', 'advanced'],
+            default: 'intermediate'
+        },
+        sentiment: {
+            type: String,
+            enum: ['positive', 'neutral', 'negative'],
+            default: 'neutral'
+        },
+        estimatedWatchTime: String,
+        recommendationReason: String,
+
+        // Legacy fields for backward compatibility
+        mainTopics: [String],
+        overallRelevanceScore: Number, // 0-100 (legacy)
+
+        // Processing metadata
+        aiModel: String,
+        processedAt: {
+            type: Date,
+            default: Date.now
+        },
+        processingStage: String,
+        fallback: {
+            type: Boolean,
+            default: false
+        }
     },
 
     // User engagement

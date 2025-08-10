@@ -308,6 +308,78 @@ class YouTubeService {
     }
 
     /**
+     * Search for videos by query
+     */
+    async searchVideos(query, maxResults = 10) {
+        try {
+            console.log(`Searching YouTube for: "${query}" (max ${maxResults} results)`);
+
+            // Search for videos
+            const searchResponse = await this.youtube.search.list({
+                part: 'snippet',
+                q: query,
+                type: 'video',
+                maxResults: maxResults,
+                order: 'relevance',
+                publishedAfter: new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString() // Last 90 days
+            });
+
+            if (!searchResponse.data.items || searchResponse.data.items.length === 0) {
+                console.log(`No videos found for query: "${query}"`);
+                return [];
+            }
+
+            const videos = [];
+            const videoIds = searchResponse.data.items.map(item => item.id.videoId);
+
+            // Get detailed information for all videos in one API call
+            const detailsResponse = await this.youtube.videos.list({
+                part: 'snippet,statistics,contentDetails',
+                id: videoIds.join(',')
+            });
+
+            for (const item of searchResponse.data.items) {
+                const videoId = item.id.videoId;
+                const detailsItem = detailsResponse.data.items.find(v => v.id === videoId);
+
+                if (detailsItem) {
+                    const video = {
+                        id: videoId,
+                        title: item.snippet.title,
+                        description: item.snippet.description || '',
+                        channelId: item.snippet.channelId,
+                        channelTitle: item.snippet.channelTitle,
+                        publishedAt: item.snippet.publishedAt,
+                        thumbnails: item.snippet.thumbnails,
+                        duration: detailsItem.contentDetails.duration,
+                        viewCount: parseInt(detailsItem.statistics.viewCount) || 0,
+                        likeCount: parseInt(detailsItem.statistics.likeCount) || 0,
+                        commentCount: parseInt(detailsItem.statistics.commentCount) || 0,
+                        tags: detailsItem.snippet.tags || [],
+                        categoryId: detailsItem.snippet.categoryId
+                    };
+
+                    videos.push(video);
+                }
+            }
+
+            console.log(`Found ${videos.length} videos for query: "${query}"`);
+            return videos;
+
+        } catch (error) {
+            console.error(`Error searching for videos with query "${query}":`, error.message);
+            
+            if (error.message.includes('quota')) {
+                throw new Error(`YouTube API quota exceeded. Please try again tomorrow or increase your quota limits.`);
+            } else if (error.message.includes('API key')) {
+                throw new Error(`Invalid YouTube API key. Please check your YOUTUBE_API_KEY in .env file.`);
+            } else {
+                throw error;
+            }
+        }
+    }
+
+    /**
      * Get video transcript
      */
     async getVideoTranscript(videoId) {
