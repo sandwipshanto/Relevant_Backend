@@ -491,10 +491,10 @@ class SimpleJobQueueRefactored {
             for (const source of user.youtubeSources) {
                 try {
                     console.log(`Checking channel: ${source.channelTitle} (${source.channelId})`);
-                    
+
                     const videos = await YouTubeService.getChannelVideosAfter(
-                        source.channelId, 
-                        startOfDay, 
+                        source.channelId,
+                        startOfDay,
                         50 // Check more videos to ensure we don't miss any
                     );
 

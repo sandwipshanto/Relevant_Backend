@@ -527,14 +527,14 @@ class YouTubeService {
                     await user.save();
                 } catch (refreshError) {
                     console.error('Error refreshing token:', refreshError);
-                    
+
                     // Mark YouTube connection as disconnected if refresh fails
                     user.youtubeAuth.isConnected = false;
                     user.youtubeAuth.accessToken = null;
                     user.youtubeAuth.refreshToken = null;
                     user.youtubeAuth.expiryDate = null;
                     await user.save();
-                    
+
                     throw new Error('YouTube access token expired and refresh failed. Please reconnect your YouTube account in settings.');
                 }
             }
