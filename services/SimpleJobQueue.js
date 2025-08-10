@@ -448,9 +448,164 @@ class SimpleJobQueueRefactored {
         return job;
     }
 
-    // Missing methods that CronService expects
-    async queueChannelMonitoring() {
-        return this.addJob('monitor-channels', {});
+    // Missing methods that are being called
+    getActiveJobs() {
+        return Array.from(this.activeJobs.values());
+    }
+
+    getAllJobs() {
+        return {
+            queued: Array.from(this.jobs.values()),
+            active: Array.from(this.activeJobs.values())
+        };
+    }
+
+    getJobById(jobId) {
+        return this.jobs.get(jobId) || this.activeJobs.get(jobId);
+    }
+
+    /**
+     * Process today's content for a specific user
+     */
+    async processTodaysContentOnly(userId) {
+        try {
+            console.log(`Processing today's content for user: ${userId}`);
+
+            const user = await User.findById(userId);
+            if (!user || !user.youtubeSources || user.youtubeSources.length === 0) {
+                return { success: false, reason: 'No YouTube sources found' };
+            }
+
+            // Get today's date range
+            const today = new Date();
+            const startOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+            const endOfDay = new Date(startOfDay);
+            endOfDay.setDate(endOfDay.getDate() + 1);
+
+            console.log(`Looking for videos published between ${startOfDay.toISOString()} and ${endOfDay.toISOString()}`);
+
+            // Collect today's videos from all channels
+            const todaysVideos = [];
+            const channelResults = [];
+
+            for (const source of user.youtubeSources) {
+                try {
+                    console.log(`Checking channel: ${source.channelTitle} (${source.channelId})`);
+                    
+                    const videos = await YouTubeService.getChannelVideosAfter(
+                        source.channelId, 
+                        startOfDay, 
+                        50 // Check more videos to ensure we don't miss any
+                    );
+
+                    // Filter to only today's videos
+                    const todaysChannelVideos = videos.filter(video => {
+                        const publishedAt = new Date(video.publishedAt);
+                        return publishedAt >= startOfDay && publishedAt < endOfDay;
+                    });
+
+                    console.log(`Found ${todaysChannelVideos.length} videos from today in ${source.channelTitle}`);
+
+                    todaysVideos.push(...todaysChannelVideos);
+                    channelResults.push({
+                        channelId: source.channelId,
+                        channelTitle: source.channelTitle,
+                        videosFound: todaysChannelVideos.length
+                    });
+
+                } catch (error) {
+                    console.error(`Error checking channel ${source.channelId}:`, error.message);
+                    channelResults.push({
+                        channelId: source.channelId,
+                        channelTitle: source.channelTitle,
+                        error: error.message
+                    });
+                }
+            }
+
+            if (todaysVideos.length === 0) {
+                console.log('No videos from today found');
+                return {
+                    success: true,
+                    userId,
+                    videosProcessed: 0,
+                    message: 'No new videos from today',
+                    channelResults
+                };
+            }
+
+            console.log(`Found ${todaysVideos.length} videos from today across all channels`);
+
+            // Filter out already processed videos
+            const newVideos = [];
+            for (const video of todaysVideos) {
+                const existingContent = await Content.findOne({
+                    sourceId: video.id,
+                    source: 'youtube'
+                });
+
+                if (!existingContent) {
+                    newVideos.push(video);
+                }
+            }
+
+            if (newVideos.length === 0) {
+                console.log('All videos from today have already been processed');
+                return {
+                    success: true,
+                    userId,
+                    videosProcessed: 0,
+                    message: 'All videos from today already processed',
+                    channelResults
+                };
+            }
+
+            console.log(`Processing ${newVideos.length} new videos from today`);
+
+            // Use AI analysis system for batch processing
+            const aggregatedInterests = this.aggregateUserInterests([user]);
+
+            // Prepare videos for analysis
+            const videosForAnalysis = newVideos.map(video => ({
+                id: video.id,
+                title: video.title,
+                description: video.description || '',
+                channelTitle: video.channelTitle,
+                duration: video.duration,
+                viewCount: video.viewCount || 0,
+                publishedAt: video.publishedAt
+            }));
+
+            console.log('Running AI analysis on today\'s videos...');
+            const analysisResult = await AIAnalysisService.analyzeContent(videosForAnalysis, aggregatedInterests);
+
+            // Process relevant videos
+            let processedCount = 0;
+            for (const analyzedVideo of analysisResult.analyzedContent) {
+                const originalVideo = newVideos.find(v => v.id === analyzedVideo.id);
+                if (originalVideo) {
+                    console.log(`✅ Processing relevant video from today: ${originalVideo.title}`);
+                    await this.processVideo(originalVideo.id, originalVideo, [userId]);
+                    processedCount++;
+                }
+            }
+
+            console.log(`Processed ${processedCount} relevant videos from today`);
+
+            return {
+                success: true,
+                userId,
+                totalVideosFound: todaysVideos.length,
+                newVideosFound: newVideos.length,
+                relevantVideosProcessed: processedCount,
+                analysisCost: analysisResult.cost.total,
+                channelResults
+            };
+
+        } catch (error) {
+            console.error(`Error processing today's content for user ${userId}:`, error);
+            throw error;
+        }
     }
 
     async queueUserSubscriptionProcessing(userId) {
@@ -459,6 +614,11 @@ class SimpleJobQueueRefactored {
 
     async queueTodaysContentProcessing(userId) {
         return this.addJob('process-todays-content', { userId });
+    }
+
+    // Missing methods that CronService expects
+    async queueChannelMonitoring() {
+        return this.addJob('monitor-channels', {});
     }
 
     async getQueueStats() {

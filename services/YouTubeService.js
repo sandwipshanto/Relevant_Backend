@@ -368,7 +368,7 @@ class YouTubeService {
 
         } catch (error) {
             console.error(`Error searching for videos with query "${query}":`, error.message);
-            
+
             if (error.message.includes('quota')) {
                 throw new Error(`YouTube API quota exceeded. Please try again tomorrow or increase your quota limits.`);
             } else if (error.message.includes('API key')) {
@@ -524,9 +524,18 @@ class YouTubeService {
                     if (newTokens.refresh_token) {
                         user.youtubeAuth.refreshToken = newTokens.refresh_token;
                     }
+                    await user.save();
                 } catch (refreshError) {
                     console.error('Error refreshing token:', refreshError);
-                    throw new Error('Unable to refresh YouTube access token. Please reconnect your account.');
+                    
+                    // Mark YouTube connection as disconnected if refresh fails
+                    user.youtubeAuth.isConnected = false;
+                    user.youtubeAuth.accessToken = null;
+                    user.youtubeAuth.refreshToken = null;
+                    user.youtubeAuth.expiryDate = null;
+                    await user.save();
+                    
+                    throw new Error('YouTube access token expired and refresh failed. Please reconnect your YouTube account in settings.');
                 }
             }
 
