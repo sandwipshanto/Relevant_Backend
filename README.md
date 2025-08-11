@@ -68,7 +68,8 @@ Relevant_Backend/
 ## 🔧 **Core Services**
 
 ### **1. SimpleJobQueue.js**
-**Purpose**: Job orchestration and processing
+**Purpose**: In-memory job orchestration and processing
+- **Type**: In-memory Map-based job queue (no Redis dependency)
 - **Responsibilities**: Queue management, video processing, user subscription handling
 - **Key Methods**:
   - `processVideo()` - Process individual YouTube videos
@@ -411,10 +412,8 @@ PORT=5000
 NODE_ENV=development
 RELEVANCE_THRESHOLD=0.6
 
-# Optional: Redis (for production job queue)
-REDIS_HOST=localhost
-REDIS_PORT=6379
-REDIS_PASSWORD=
+# Job Processing
+JOB_PROCESSING_INTERVAL=5000
 ```
 
 ### **AI Analysis Configuration**
@@ -508,7 +507,7 @@ The 5-stage AI analysis pipeline reduces costs by:
 
 ### **Processing Efficiency**
 - **Batch Processing**: Multiple videos analyzed together
-- **Background Jobs**: Non-blocking content processing
+- **Background Jobs**: Non-blocking content processing using in-memory queue
 - **Smart Queuing**: Priority-based job processing
 - **Caching**: Transcript and analysis caching
 
@@ -603,10 +602,6 @@ export NODE_ENV=production
 
 # Use production database
 export MONGODB_URI=mongodb://prod-server:27017/relevant
-
-# Configure Redis for job queue
-export REDIS_HOST=prod-redis-server
-export REDIS_PORT=6379
 
 # Start with PM2
 pm2 start server.js --name "relevant-backend"
@@ -735,6 +730,7 @@ await fetch(`/api/content/${contentId}/interact`, {
 3. **Advanced Analytics** - User behavior tracking
 4. **Machine Learning** - Personalized recommendation engine
 5. **Multi-Platform Support** - Twitter, Reddit, Medium integration
+6. **Production Scaling** - Consider Redis-based job queue for high-volume deployments
 
 ---
 
@@ -761,6 +757,7 @@ Key metrics to monitor:
 3. **High AI Costs**: Adjust relevance thresholds to filter more aggressively
 4. **Slow Job Processing**: Increase job processing concurrency
 5. **Database Connection Issues**: Check MongoDB connectivity and credentials
+6. **Job Queue Restart**: In-memory jobs are lost on server restart (use persistent storage for critical jobs)
 
 ---
 
