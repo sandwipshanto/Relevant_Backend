@@ -113,6 +113,9 @@ debug-*.js
 *-debug.js
 temp-*.js
 
+# Scripts folder (development/testing scripts)
+scripts/
+
 # Production files
 *.tgz
 *.tar.gz
